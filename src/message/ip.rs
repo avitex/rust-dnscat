@@ -266,18 +266,19 @@ where
         }
         // Create a buffer to write the data to
         let mut data = Vec::with_capacity(data_len_max);
+        let mut data_remaining = data_len;
         // For each block, check the sequence and extract the data into the buffer
-        for (expected_seq, part_ref) in Self::seq_counter(0).zip(self.blocks.iter()) {
-            match part_ref.sequence() {
-                0 if expected_seq == 0 => {
-                    // TODO: trim padding
-                    data.extend_from_slice(part_ref.head_data())
-                }
-                part_seq if part_seq == expected_seq => {
-                    // TODO: trim padding
-                    data.extend_from_slice(part_ref.tail_data())
-                }
-                _ => return Err(MessageError::MissingSequence(expected_seq)),
+        for (seq, block_ref) in Self::seq_counter(0).zip(self.blocks.iter()) {
+            let block_data = match block_ref.sequence() {
+                0 if seq == 0 => block_ref.head_data(),
+                block_seq if block_seq == seq => block_ref.tail_data(),
+                _ => return Err(MessageError::MissingSequence(seq)),
+            };
+            if data_remaining < block_data.len() {
+                data.extend_from_slice(&block_data[0..data_remaining]);
+            } else {
+                data.extend_from_slice(block_data);
+                data_remaining -= block_data.len();
             }
         }
         // Return the buffer
@@ -463,15 +464,24 @@ mod tests {
 
     #[test]
     fn test_ip_message_basic() {
-        let result = parse_blocks(vec![Ipv4Addr::new(1, 7, 6, 5), Ipv4Addr::new(0, 4, 9, 8)]);
-        assert_eq!(result, Ok(vec![9, 8, 7, 6]));
+        assert_eq!(
+            parse_blocks(vec![Ipv4Addr::new(1, 7, 6, 5), Ipv4Addr::new(0, 4, 9, 8)]),
+            Ok(vec![9, 8, 7, 6])
+        );
     }
 
     #[test]
     fn test_ip_message_length_invalid() {
-        let result = parse_blocks(vec![Ipv4Addr::new(1, 7, 6, 5), Ipv4Addr::new(0, 6, 9, 8)]);
         assert_eq!(
-            result,
+            parse_blocks(vec![Ipv4Addr::new(0, 3, 0, 0)]),
+            Err(MessageError::LengthOutOfBounds {
+                len: 3,
+                min: 0,
+                max: 2,
+            })
+        );
+        assert_eq!(
+            parse_blocks(vec![Ipv4Addr::new(0, 6, 0, 0), Ipv4Addr::new(1, 0, 0, 0)]),
             Err(MessageError::LengthOutOfBounds {
                 len: 6,
                 min: 3,
@@ -481,12 +491,22 @@ mod tests {
     }
 
     #[test]
+    fn test_ip_message_empty() {
+        assert_eq!(
+            parse_blocks(vec![]),
+            Err(MessageError::MissingSequence(0))
+        );
+    }
+
+    #[test]
     fn test_ip_message_missing_sequence() {
-        let result = parse_blocks(vec![
-            Ipv4Addr::new(3, 7, 6, 5),
-            Ipv4Addr::new(2, 7, 6, 5),
-            Ipv4Addr::new(0, 8, 9, 8),
-        ]);
-        assert_eq!(result, Err(MessageError::MissingSequence(1)));
+        assert_eq!(
+            parse_blocks(vec![
+                Ipv4Addr::new(3, 0, 0, 0),
+                Ipv4Addr::new(2, 0, 0, 0),
+                Ipv4Addr::new(0, 8, 0, 0),
+            ]),
+            Err(MessageError::MissingSequence(1))
+        );
     }
 }
