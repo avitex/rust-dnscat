@@ -18,24 +18,27 @@ use crate::private::Sealed;
 ///
 /// # Structure
 /// ```plain
-/// +--------+ +--------+ +--------+
-/// |  HEAD  | |  TAIL  | |  TAIL  |
-/// +--------+ +--------+ +--------+
+/// +--------+    +--------+    +--------+
+/// |  HEAD  | -> |  TAIL  | -> |  TAIL  | -> ...
+/// +--------+    +--------+    +--------+
 /// ```
 /// **Head block**
 /// ```plain
-/// +-------+-------+--------------+
-/// |  SEQ  |  LEN  |     DATA     |
-/// |  1 B  |  1 B  |     n Bs     |
-/// +-------+-------+--------------+
+/// +-------------------+------------------------+---------------------+
+/// |       SEQ         |           LEN          |         DATA        |
+/// |  sequence number  |  total length of data  |  message data part  |
+/// |     (1 byte)      |         (1 byte)       |      (n bytes)      |
+/// +-------------------+------------------------+---------------------+
 /// ```
 /// **Tail block**
 /// ```plain
-/// +-------+----------------------+
-/// |  SEQ  |         DATA         |
-/// |  1 B  |         n Bs         |
-/// +-------+----------------------+
+/// +-------------------+----------------------------------------------+
+/// |       SEQ         |                     DATA                     |
+/// |  sequence number  |               message data part              |
+/// |     (1 byte)      |                  (n bytes)                   |
+/// +-------------------+----------------------------------------------+
 /// ```
+///
 #[derive(Debug, Clone, PartialEq)]
 pub struct IpMessage<T: IpMessageBlock> {
     sorted: bool,
@@ -70,23 +73,23 @@ where
     pub fn from_data(data: &[u8]) -> Self {
         // Assert the length of data does not exceed the message limit
         assert!(data.len() <= Self::max_data_len(), "message data too long");
-        // Calcuate the index to split the data between head and body
+        // Calcuate the index to split the data between head and tail
         let head_split_idx = cmp::min(data.len(), Self::head_block_data_size());
-        // Split the data for the head and body
-        let (head_data, body_data) = data.split_at(head_split_idx);
+        // Split the data for the head and tail
+        let (head_data, tail_data) = data.split_at(head_split_idx);
         // Calculate the number of blocks required to meet the data length
-        let block_count = data.len() / Self::body_block_data_size() + 1;
+        let block_count = data.len() / Self::tail_block_data_size() + 1;
         // Assert the block count does not exceed the max block count
         assert!(block_count <= Self::max_block_count());
         // Create a new message with the calculated block count
         let mut this = Self::with_capacity(block_count);
         // Push the head block to the message
         this.push_block_unchecked(Self::new_head_block(data.len() as u8, head_data));
-        // Split the body data into chucks that will fit
-        let body_chucks = body_data.chunks(Self::body_block_data_size());
-        // For each chuck, push a body block
-        for (seq, chunk) in Self::seq_counter(1).zip(body_chucks) {
-            this.push_block_unchecked(Self::new_body_block(seq, chunk));
+        // Split the tail data into chucks that will fit
+        let tail_chucks = tail_data.chunks(Self::tail_block_data_size());
+        // For each chuck, push a tail block
+        for (seq, chunk) in Self::seq_counter(1).zip(tail_chucks) {
+            this.push_block_unchecked(Self::new_tail_block(seq, chunk));
         }
         // Explictly state the blocks are sorted
         this.sorted = true;
@@ -166,10 +169,10 @@ where
     /// The max number of blocks to fullfill the max amount of data possible
     /// in a message.
     ///
-    /// This is calculated by: `floor(max_data_len / body_block_data_size) + 1`.
+    /// This is calculated by: `floor(max_data_len / tail_block_data_size) + 1`.
     /// The addition of `1` accounts for the length byte on the first block.
     pub fn max_block_count() -> usize {
-        (Self::max_data_len() / Self::body_block_data_size()) + 1
+        (Self::max_data_len() / Self::tail_block_data_size()) + 1
     }
 
     /// The total size of a message block including the header.
@@ -183,8 +186,8 @@ where
         Self::block_size() - 2
     }
 
-    /// The total size available for data in a body block.
-    pub fn body_block_data_size() -> usize {
+    /// The total size available for data in a tail block.
+    pub fn tail_block_data_size() -> usize {
         Self::block_size() - 1
     }
 
@@ -196,15 +199,15 @@ where
     /// Calculates the bounds of data size based on the number of blocks and
     /// the block size.
     ///
-    /// The `max_len` is calculated by: `(block_count * body_block_data_size) - 1`.
+    /// The `max_len` is calculated by: `(block_count * tail_block_data_size) - 1`.
     /// The subtraction of `1` accounts for the length byte on the first block.
     ///
-    /// The `min_len` is calcuated by: `|max_len - body_block_data_size|`.
+    /// The `min_len` is calcuated by: `|max_len - tail_block_data_size|`.
     ///
     /// Returns `(min_len, max_len)`
     pub fn data_len_bounds(&self) -> (usize, usize) {
-        let max_len = (self.block_count() * Self::body_block_data_size()) - 1;
-        let min_len = max_len.saturating_sub(Self::body_block_data_size() - 1);
+        let max_len = (self.block_count() * Self::tail_block_data_size()) - 1;
+        let min_len = max_len.saturating_sub(Self::tail_block_data_size() - 1);
         (min_len, max_len)
     }
 
@@ -272,7 +275,7 @@ where
                 }
                 part_seq if part_seq == expected_seq => {
                     // TODO: trim padding
-                    data.extend_from_slice(part_ref.body_data())
+                    data.extend_from_slice(part_ref.tail_data())
                 }
                 _ => return Err(MessageError::MissingSequence(expected_seq)),
             }
@@ -310,7 +313,7 @@ where
     }
 
     #[inline]
-    fn new_body_block(seq: u8, data: &[u8]) -> T {
+    fn new_tail_block(seq: u8, data: &[u8]) -> T {
         let mut block = T::zeroed();
         let bytes = block.bytes_mut();
         bytes[0] = seq;
@@ -359,8 +362,8 @@ pub trait IpMessageBlock: Sealed {
         &self.bytes()[2..]
     }
 
-    /// Get the `DATA` field, assuming it is a body block.
-    fn body_data(&self) -> &[u8] {
+    /// Get the `DATA` field, assuming it is a tail block.
+    fn tail_data(&self) -> &[u8] {
         &self.bytes()[1..]
     }
 }
