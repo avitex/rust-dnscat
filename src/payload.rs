@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_decode_iter_basic() {
-        let payload = ".Aa.B.100.".as_bytes();
+        let payload = b".Aa.B.100.".as_ref();
         let decode = HexDecodeIterator::from(payload);
         let decoded: Vec<u8> = decode.filter_map(Result::ok).collect();
         assert_eq!(decoded, vec![0xAA, 0xB1, 0x00]);
