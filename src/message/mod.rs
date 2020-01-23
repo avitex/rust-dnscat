@@ -1,9 +1,9 @@
-mod hex;
 mod ip;
 pub mod payload;
 
 use std::str::{self, Utf8Error};
 
+use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use bytes::BufMut;
 
@@ -42,12 +42,23 @@ pub enum EncryptionKind {
     AUTH = 0x01,
 }
 
+impl EncryptionKind {
+    pub fn from_u8(kind: u8) -> Option<Self> {
+        match kind {
+            0x00 => Some(Self::INIT),
+            0x01 => Some(Self::AUTH),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum MessageError {
     Parse,
     TooLong,
     Utf8(Utf8Error),
     UnknownKind(u8),
+    UnknownEncKind(u8),
     MissingSequence(u8),
     LengthOutOfBounds { min: usize, max: usize, len: usize },
 }
@@ -69,7 +80,7 @@ pub enum Message<'a> {
     Syn(SynMessage<'a>),
     Msg(MsgMessage<'a>),
     Fin(FinMessage<'a>),
-    //Enc(EncMessage<'a>),
+    Enc(EncMessage),
     //Ping(PingMessage<'a>),
 }
 
@@ -79,7 +90,7 @@ impl<'a> Message<'a> {
             Self::Syn(_) => MessageKind::SYN,
             Self::Msg(_) => MessageKind::MSG,
             Self::Fin(_) => MessageKind::FIN,
-            // Self::Enc(_) => MessageKind::ENC,
+            Self::Enc(_) => MessageKind::ENC,
             // Self::Ping(_) => MessageKind::PING,
         }
     }
@@ -89,7 +100,7 @@ impl<'a> Message<'a> {
             MessageKind::SYN => SynMessage::decode(b).map(|(b, m)| (b, Self::Syn(m))),
             MessageKind::MSG => MsgMessage::decode(b).map(|(b, m)| (b, Self::Msg(m))),
             MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
-            // MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
+            MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
             // MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
             _ => unimplemented!(),
         }
@@ -102,7 +113,7 @@ impl<'a> Encode for Message<'a> {
             Self::Syn(m) => m.encode(b),
             Self::Msg(m) => m.encode(b),
             Self::Fin(m) => m.encode(b),
-            // Self::Enc(m) => m.encode(b),
+            Self::Enc(m) => m.encode(b),
             // Self::Ping(m) => m.encode(b),
         }
     }
@@ -281,45 +292,144 @@ impl<'a> Encode for FinMessage<'a> {
     }
 }
 
-// ///////////////////////////////////////////////////////////////////////////////
-// // ENC
+///////////////////////////////////////////////////////////////////////////////
+// ENC
 
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum EncMessageBody<'a> {
-//     Init {
-//         public_key_x: &'a [u8],
-//         public_key_y: &'a [u8],
-//     },
-//     Auth {
-//         authenticator: &'a [u8],
-//     },
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub enum EncMessageBody {
+    Init {
+        public_key_x: ArrayVec<[u8; 16]>,
+        public_key_y: ArrayVec<[u8; 16]>,
+    },
+    Auth {
+        authenticator: ArrayVec<[u8; 16]>,
+    },
+}
 
-// #[derive(Debug, Clone, PartialEq)]
-// pub struct EncMessage<'a> {
-//     sess_id: u16,
-//     flags: u16,
-//     body: EncMessageBody<'a>,
-// }
+impl EncMessageBody {
+    pub fn kind(&self) -> EncryptionKind {
+        match self {
+            Self::Init { .. } => EncryptionKind::INIT,
+            Self::Auth { .. } => EncryptionKind::AUTH,
+        }
+    }
 
-// impl<'a> Decode<'a> for EncMessage<'a> {
-//     type Error = MessageError;
+    pub fn decode_kind<'a>(
+        kind: EncryptionKind,
+        b: &'a [u8],
+    ) -> Result<(&'a [u8], Self), MessageError> {
+        match kind {
+            EncryptionKind::INIT => {
+                let mut public_key_x = ArrayVec::new();
+                let mut public_key_y = ArrayVec::new();
+                let (b, _) = nom::hex_string_null_padded(b, 32, &mut public_key_x)?;
+                let (b, _) = nom::hex_string_null_padded(b, 32, &mut public_key_y)?;
+                Ok((
+                    b,
+                    Self::Init {
+                        public_key_x,
+                        public_key_y,
+                    },
+                ))
+            }
+            EncryptionKind::AUTH => {
+                let mut authenticator = ArrayVec::new();
+                let (b, _) = nom::hex_string_null_padded(b, 32, &mut authenticator)?;
+                Ok((b, Self::Auth { authenticator }))
+            }
+        }
+    }
+}
 
-//     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-//         let (b, sess_id) = nom::be_u16(b)?;
-//         let (b, subtype) = nom::be_u16(b)?;
-//         let (b, flags) = nom::be_u16(b)?;
-//         Ok((b, Self { sess_id,  }))
-//     }
-// }
+impl<'a> Encode for EncMessageBody {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        match self {
+            Self::Init {
+                public_key_x,
+                public_key_y,
+            } => {
+                b.put_slice(public_key_x);
+                b.put_slice(public_key_y);
+            }
+            Self::Auth { authenticator } => {
+                b.put_slice(authenticator);
+            }
+        }
+    }
+}
 
-// impl<'a> Encode for EncMessage<'a> {
-//     fn encode<B: BufMut>(&self, b: &mut B) {
-//         b.put_u16(self.sess_id);
-//         // subtype
-//         b.put_u16(self.flags);
-//     }
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub struct EncMessage {
+    sess_id: u16,
+    flags: u16,
+    body: EncMessageBody,
+}
+
+impl<'a> Decode<'a> for EncMessage {
+    type Error = MessageError;
+
+    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+        let (b, sess_id) = nom::be_u16(b)?;
+        let (b, enc_kind) = nom::be_u8(b)?;
+        let enc_kind = EncryptionKind::from_u8(enc_kind)
+            .ok_or_else(|| MessageError::UnknownEncKind(enc_kind))?;
+        let (b, flags) = nom::be_u16(b)?;
+        let (b, body) = EncMessageBody::decode_kind(enc_kind, b)?;
+        Ok((
+            b,
+            Self {
+                sess_id,
+                flags,
+                body,
+            },
+        ))
+    }
+}
+
+impl Encode for EncMessage {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        b.put_u16(self.sess_id);
+        b.put_u8(self.body.kind() as u8);
+        b.put_u16(self.flags);
+        self.body.encode(b);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PING
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PingMessage<'a> {
+    sess_id: u16,
+    ping_id: u16,
+    data: &'a str,
+}
+
+impl<'a> Decode<'a> for PingMessage<'a> {
+    type Error = MessageError;
+
+    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+        let (b, sess_id) = nom::be_u16(b)?;
+        let (b, ping_id) = nom::be_u16(b)?;
+        let (b, data) = nom::nt_string(b)?;
+        Ok((
+            b,
+            Self {
+                sess_id,
+                ping_id,
+                data,
+            },
+        ))
+    }
+}
+
+impl<'a> Encode for PingMessage<'a> {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        b.put_u16(self.sess_id);
+        b.put_u16(self.ping_id);
+        b.put_slice(self.data.as_bytes());
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -344,7 +454,7 @@ mod tests {
             // Session name
             b'h', b'e', b'l', b'l', b'o', 0x00,
         ][..];
-        assert_eq!(MessageFrame::decode(data), (Ok((EMPTY, MessageFrame {
+        assert_eq!(MessageFrame::decode(data), (Ok((EMPTY, MessageFrame {   
             packet_id: 1,
             message: Message::Syn(SynMessage {
                 sess_id: 1,

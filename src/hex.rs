@@ -33,6 +33,26 @@ pub fn hex_byte(high: u8, low: u8) -> u8 {
     low | (high << 4)
 }
 
+pub fn hex_decode_into(src: &[u8], dst: &mut [u8]) -> Result<(), usize> {
+    assert!(
+        src.len() / 2 == dst.len(),
+        "hex dst length must be src length / 2"
+    );
+    for (i, chunk) in src.chunks_exact(2).enumerate() {
+        if let [high, low] = chunk {
+            match (hex_nibble(*high), hex_nibble(*low)) {
+                (NibbleResult::Value(high), NibbleResult::Value(low)) => {
+                    dst[i] = hex_byte(high, low);
+                }
+                _ => return Err(i),
+            }
+        } else {
+            unreachable!();
+        }
+    }
+    Ok(())
+}
+
 #[inline]
 pub fn hex_nibble(nibble: u8) -> NibbleResult {
     if nibble > 127 {

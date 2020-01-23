@@ -1,3 +1,4 @@
+mod hex;
 mod util;
 
 pub mod message;

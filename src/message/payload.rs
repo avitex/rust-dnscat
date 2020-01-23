@@ -1,6 +1,6 @@
 use std::slice;
 
-use super::hex::{hex_byte, hex_nibble, NibbleResult};
+use crate::hex::{hex_byte, hex_nibble, NibbleResult};
 
 pub enum DecodeError {
     IncompleteByte,
