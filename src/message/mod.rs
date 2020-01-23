@@ -91,7 +91,7 @@ impl<'a> Message<'a> {
             MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
             // MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
             // MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
-            _ => unimplemented!()
+            _ => unimplemented!(),
         }
     }
 }
@@ -256,7 +256,7 @@ impl<'a> Encode for MsgMessage<'a> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// MSG
+// FIN
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FinMessage<'a> {
@@ -270,13 +270,7 @@ impl<'a> Decode<'a> for FinMessage<'a> {
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
         let (b, sess_id) = nom::be_u16(b)?;
         let (b, reason) = nom::nt_string(b)?;
-        Ok((
-            b,
-            Self {
-                sess_id,
-                reason,
-            },
-        ))
+        Ok((b, Self { sess_id, reason }))
     }
 }
 
@@ -286,6 +280,46 @@ impl<'a> Encode for FinMessage<'a> {
         b.put_slice(self.reason.as_bytes());
     }
 }
+
+// ///////////////////////////////////////////////////////////////////////////////
+// // ENC
+
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum EncMessageBody<'a> {
+//     Init {
+//         public_key_x: &'a [u8],
+//         public_key_y: &'a [u8],
+//     },
+//     Auth {
+//         authenticator: &'a [u8],
+//     },
+// }
+
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct EncMessage<'a> {
+//     sess_id: u16,
+//     flags: u16,
+//     body: EncMessageBody<'a>,
+// }
+
+// impl<'a> Decode<'a> for EncMessage<'a> {
+//     type Error = MessageError;
+
+//     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+//         let (b, sess_id) = nom::be_u16(b)?;
+//         let (b, subtype) = nom::be_u16(b)?;
+//         let (b, flags) = nom::be_u16(b)?;
+//         Ok((b, Self { sess_id,  }))
+//     }
+// }
+
+// impl<'a> Encode for EncMessage<'a> {
+//     fn encode<B: BufMut>(&self, b: &mut B) {
+//         b.put_u16(self.sess_id);
+//         // subtype
+//         b.put_u16(self.flags);
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
