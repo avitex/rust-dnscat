@@ -4,7 +4,7 @@
 
 # rust-dnscat2
 
-**Rust implementation of the DNSCAT2 protocol**
+**Rust implementation of the DNSCAT2 protocol**  
 Documentation hosted on [docs.rs](https://docs.rs/dnscat2).
 
 ```toml
