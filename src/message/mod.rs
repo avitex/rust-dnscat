@@ -9,9 +9,8 @@ use bytes::BufMut;
 
 pub use self::ip::*;
 
-use crate::hex;
 use crate::transport::{Decode, Encode};
-use crate::util::parse;
+use crate::util::{hex, parse};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
@@ -308,7 +307,7 @@ impl<'a> Encode for FinMessage<'a> {
 fn encode_enc_hex_part<B: BufMut>(b: &mut B, raw: &[u8]) {
     let mut part = ArrayVec::from([0u8; 32]);
     let part_len = raw.len() * 2;
-    hex::hex_encode_into(&raw[..], &mut part[..part_len]);
+    hex::encode_to_slice(&raw[..], &mut part[..part_len]);
     b.put_slice(&part[..]);
 }
 

@@ -1,6 +1,6 @@
 use std::slice;
 
-use crate::hex::{hex_byte, hex_nibble, NibbleResult};
+use crate::util::hex::{self, NibbleResult};
 
 pub enum DecodeError {
     IncompleteByte,
@@ -18,7 +18,7 @@ pub struct HexDecodeIterator<'a>(slice::Iter<'a, u8>);
 impl<'a> HexDecodeIterator<'a> {
     fn next_nibble_value(&mut self) -> Result<Option<u8>, DecodeError> {
         loop {
-            let nibble_res = self.0.next().map(Clone::clone).map(hex_nibble);
+            let nibble_res = self.0.next().map(Clone::clone).map(hex::decode_nibble);
             match nibble_res {
                 None => return Ok(None),
                 Some(NibbleResult::Ignore) => continue,
@@ -34,7 +34,7 @@ impl<'a> HexDecodeIterator<'a> {
     fn next_byte(&mut self) -> Result<Option<u8>, DecodeError> {
         if let Some(high) = self.next_nibble_value()? {
             if let Some(low) = self.next_nibble_value()? {
-                Ok(Some(hex_byte(high, low)))
+                Ok(Some(hex::join_halves(high, low)))
             } else {
                 Err(DecodeError::IncompleteByte)
             }
