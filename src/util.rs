@@ -1,4 +1,4 @@
-pub mod nom {
+pub mod parse {
     use nom::IResult;
     use std::str;
 

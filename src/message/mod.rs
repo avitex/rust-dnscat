@@ -10,7 +10,7 @@ use bytes::BufMut;
 pub use self::ip::*;
 
 use crate::transport::{Decode, Encode};
-use crate::util::nom;
+use crate::util::parse;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
@@ -69,8 +69,8 @@ impl From<Utf8Error> for MessageError {
     }
 }
 
-impl From<nom::Error<()>> for MessageError {
-    fn from(_err: nom::Error<()>) -> Self {
+impl From<parse::Error<()>> for MessageError {
+    fn from(_err: parse::Error<()>) -> Self {
         Self::Parse
     }
 }
@@ -129,8 +129,8 @@ impl<'a> Decode<'a> for MessageFrame<'a> {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, packet_id) = nom::be_u16(b)?;
-        let (b, message_kind) = nom::be_u8(b)?;
+        let (b, packet_id) = parse::be_u16(b)?;
+        let (b, message_kind) = parse::be_u8(b)?;
         let message_kind = MessageKind::from_u8(message_kind)
             .ok_or_else(|| MessageError::UnknownKind(message_kind))?;
         let (b, message) = Message::decode_kind(message_kind, b)?;
@@ -193,12 +193,12 @@ impl<'a> Decode<'a> for SynMessage<'a> {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = nom::be_u16(b)?;
-        let (b, init_seq) = nom::be_u16(b)?;
-        let (b, opts_raw) = nom::be_u16(b)?;
+        let (b, sess_id) = parse::be_u16(b)?;
+        let (b, init_seq) = parse::be_u16(b)?;
+        let (b, opts_raw) = parse::be_u16(b)?;
         let opts = MessageOption::from_bits_truncate(opts_raw);
         let (b, sess_name) = if opts.contains(MessageOption::NAME) {
-            nom::nt_string(b)?
+            parse::nt_string(b)?
         } else {
             (b, "")
         };
@@ -242,9 +242,9 @@ impl<'a> Decode<'a> for MsgMessage<'a> {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = nom::be_u16(b)?;
-        let (b, seq) = nom::be_u16(b)?;
-        let (data, ack) = nom::be_u16(b)?;
+        let (b, sess_id) = parse::be_u16(b)?;
+        let (b, seq) = parse::be_u16(b)?;
+        let (data, ack) = parse::be_u16(b)?;
         Ok((
             &[],
             Self {
@@ -279,8 +279,8 @@ impl<'a> Decode<'a> for FinMessage<'a> {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = nom::be_u16(b)?;
-        let (b, reason) = nom::nt_string(b)?;
+        let (b, sess_id) = parse::be_u16(b)?;
+        let (b, reason) = parse::nt_string(b)?;
         Ok((b, Self { sess_id, reason }))
     }
 }
@@ -322,8 +322,8 @@ impl EncMessageBody {
             EncryptionKind::INIT => {
                 let mut public_key_x = ArrayVec::new();
                 let mut public_key_y = ArrayVec::new();
-                let (b, _) = nom::hex_string_null_padded(b, 32, &mut public_key_x)?;
-                let (b, _) = nom::hex_string_null_padded(b, 32, &mut public_key_y)?;
+                let (b, _) = parse::hex_string_null_padded(b, 32, &mut public_key_x)?;
+                let (b, _) = parse::hex_string_null_padded(b, 32, &mut public_key_y)?;
                 Ok((
                     b,
                     Self::Init {
@@ -334,7 +334,7 @@ impl EncMessageBody {
             }
             EncryptionKind::AUTH => {
                 let mut authenticator = ArrayVec::new();
-                let (b, _) = nom::hex_string_null_padded(b, 32, &mut authenticator)?;
+                let (b, _) = parse::hex_string_null_padded(b, 32, &mut authenticator)?;
                 Ok((b, Self::Auth { authenticator }))
             }
         }
@@ -369,11 +369,11 @@ impl<'a> Decode<'a> for EncMessage {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = nom::be_u16(b)?;
-        let (b, enc_kind) = nom::be_u8(b)?;
+        let (b, sess_id) = parse::be_u16(b)?;
+        let (b, enc_kind) = parse::be_u8(b)?;
         let enc_kind = EncryptionKind::from_u8(enc_kind)
             .ok_or_else(|| MessageError::UnknownEncKind(enc_kind))?;
-        let (b, flags) = nom::be_u16(b)?;
+        let (b, flags) = parse::be_u16(b)?;
         let (b, body) = EncMessageBody::decode_kind(enc_kind, b)?;
         Ok((
             b,
@@ -409,9 +409,9 @@ impl<'a> Decode<'a> for PingMessage<'a> {
     type Error = MessageError;
 
     fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = nom::be_u16(b)?;
-        let (b, ping_id) = nom::be_u16(b)?;
-        let (b, data) = nom::nt_string(b)?;
+        let (b, sess_id) = parse::be_u16(b)?;
+        let (b, ping_id) = parse::be_u16(b)?;
+        let (b, data) = parse::nt_string(b)?;
         Ok((
             b,
             Self {
