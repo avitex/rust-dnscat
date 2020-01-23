@@ -265,7 +265,7 @@ where
             });
         }
         // Create a buffer to write the data to
-        let mut data = Vec::with_capacity(data_len_max);
+        let mut data = Vec::with_capacity(data_len);
         let mut data_remaining = data_len;
         // For each block, check the sequence and extract the data into the buffer
         for (seq, block_ref) in Self::seq_counter(0).zip(self.blocks.iter()) {
@@ -492,10 +492,7 @@ mod tests {
 
     #[test]
     fn test_ip_message_empty() {
-        assert_eq!(
-            parse_blocks(vec![]),
-            Err(MessageError::MissingSequence(0))
-        );
+        assert_eq!(parse_blocks(vec![]), Err(MessageError::MissingSequence(0)));
     }
 
     #[test]
