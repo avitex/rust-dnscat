@@ -9,6 +9,7 @@ use bytes::BufMut;
 
 pub use self::ip::*;
 
+use crate::hex;
 use crate::transport::{Decode, Encode};
 use crate::util::parse;
 
@@ -54,12 +55,13 @@ impl EncryptionKind {
 
 #[derive(Debug, PartialEq)]
 pub enum MessageError {
-    Parse,
     TooLong,
+    Parse(Vec<u8>, parse::ErrorKind),
     Utf8(Utf8Error),
     UnknownKind(u8),
     UnknownEncKind(u8),
     MissingSequence(u8),
+    Incomplete(parse::Needed),
     LengthOutOfBounds { min: usize, max: usize, len: usize },
 }
 
@@ -69,9 +71,16 @@ impl From<Utf8Error> for MessageError {
     }
 }
 
-impl From<parse::Error<()>> for MessageError {
-    fn from(_err: parse::Error<()>) -> Self {
-        Self::Parse
+impl<I> From<parse::Error<(I, parse::ErrorKind)>> for MessageError
+where
+    I: AsRef<[u8]>,
+{
+    fn from(err: parse::Error<(I, parse::ErrorKind)>) -> Self {
+        match err {
+            parse::Error::Error((i, kind)) => Self::Parse(i.as_ref().to_vec(), kind),
+            parse::Error::Failure((i, kind)) => Self::Parse(i.as_ref().to_vec(), kind),
+            parse::Error::Incomplete(needed) => Self::Incomplete(needed),
+        }
     }
 }
 
@@ -81,7 +90,7 @@ pub enum Message<'a> {
     Msg(MsgMessage<'a>),
     Fin(FinMessage<'a>),
     Enc(EncMessage),
-    //Ping(PingMessage<'a>),
+    Ping(PingMessage<'a>),
 }
 
 impl<'a> Message<'a> {
@@ -91,7 +100,7 @@ impl<'a> Message<'a> {
             Self::Msg(_) => MessageKind::MSG,
             Self::Fin(_) => MessageKind::FIN,
             Self::Enc(_) => MessageKind::ENC,
-            // Self::Ping(_) => MessageKind::PING,
+            Self::Ping(_) => MessageKind::PING,
         }
     }
 
@@ -101,8 +110,7 @@ impl<'a> Message<'a> {
             MessageKind::MSG => MsgMessage::decode(b).map(|(b, m)| (b, Self::Msg(m))),
             MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
             MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
-            // MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
-            _ => unimplemented!(),
+            MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
         }
     }
 }
@@ -114,7 +122,7 @@ impl<'a> Encode for Message<'a> {
             Self::Msg(m) => m.encode(b),
             Self::Fin(m) => m.encode(b),
             Self::Enc(m) => m.encode(b),
-            // Self::Ping(m) => m.encode(b),
+            Self::Ping(m) => m.encode(b),
         }
     }
 }
@@ -289,11 +297,26 @@ impl<'a> Encode for FinMessage<'a> {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.sess_id);
         b.put_slice(self.reason.as_bytes());
+        b.put_u8(0);
     }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // ENC
+
+fn encode_enc_hex_part<B: BufMut>(b: &mut B, raw: &[u8]) {
+    let mut part = ArrayVec::from([0u8; 32]);
+    let part_len = raw.len() * 2;
+    hex::hex_encode_into(&raw[..], &mut part[..part_len]);
+    b.put_slice(&part[..]);
+}
+
+fn decode_enc_hex_part(hex: &[u8]) -> Result<(&[u8], ArrayVec<[u8; 16]>), MessageError> {
+    let mut part = ArrayVec::from([0u8; 16]);
+    let (b, part_len) = parse::np_hex_string(hex, 32, &mut part[..])?;
+    part.truncate(part_len);
+    Ok((b, part))
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EncMessageBody {
@@ -314,16 +337,11 @@ impl EncMessageBody {
         }
     }
 
-    pub fn decode_kind<'a>(
-        kind: EncryptionKind,
-        b: &'a [u8],
-    ) -> Result<(&'a [u8], Self), MessageError> {
+    pub fn decode_kind(kind: EncryptionKind, b: &[u8]) -> Result<(&[u8], Self), MessageError> {
         match kind {
             EncryptionKind::INIT => {
-                let mut public_key_x = ArrayVec::new();
-                let mut public_key_y = ArrayVec::new();
-                let (b, _) = parse::hex_string_null_padded(b, 32, &mut public_key_x)?;
-                let (b, _) = parse::hex_string_null_padded(b, 32, &mut public_key_y)?;
+                let (b, public_key_x) = decode_enc_hex_part(b)?;
+                let (b, public_key_y) = decode_enc_hex_part(b)?;
                 Ok((
                     b,
                     Self::Init {
@@ -333,8 +351,7 @@ impl EncMessageBody {
                 ))
             }
             EncryptionKind::AUTH => {
-                let mut authenticator = ArrayVec::new();
-                let (b, _) = parse::hex_string_null_padded(b, 32, &mut authenticator)?;
+                let (b, authenticator) = decode_enc_hex_part(b)?;
                 Ok((b, Self::Auth { authenticator }))
             }
         }
@@ -345,14 +362,14 @@ impl<'a> Encode for EncMessageBody {
     fn encode<B: BufMut>(&self, b: &mut B) {
         match self {
             Self::Init {
-                public_key_x,
-                public_key_y,
+                ref public_key_x,
+                ref public_key_y,
             } => {
-                b.put_slice(public_key_x);
-                b.put_slice(public_key_y);
+                encode_enc_hex_part(b, &public_key_x[..]);
+                encode_enc_hex_part(b, &public_key_y[..]);
             }
             Self::Auth { authenticator } => {
-                b.put_slice(authenticator);
+                encode_enc_hex_part(b, &authenticator[..]);
             }
         }
     }
@@ -428,6 +445,7 @@ impl<'a> Encode for PingMessage<'a> {
         b.put_u16(self.sess_id);
         b.put_u16(self.ping_id);
         b.put_slice(self.data.as_bytes());
+        b.put_u8(0);
     }
 }
 
@@ -435,33 +453,164 @@ impl<'a> Encode for PingMessage<'a> {
 mod tests {
     use super::*;
 
-    const EMPTY: &[u8] = &[];
+    fn assert_msg_encdec_works(packet_in: &[u8], valid: MessageFrame<'static>) {
+        let decoded = match MessageFrame::decode(packet_in) {
+            Ok((&[], decoded)) => decoded,
+            Ok((bytes, _)) => panic!("packet was not fully consumed (remaining: {:?})", bytes),
+            Err(err) => panic!("error decoding packet: {:?}", err),
+        };
+        let mut packet_out = Vec::new();
+        assert_eq!(valid, decoded, "valid = decoded");
+        valid.encode(&mut packet_out);
+        assert_eq!(packet_in, &packet_out[..], "packet = encoded")
+    }
 
     #[test]
     #[rustfmt::skip]
     fn test_parse_message_syn() {
-        let data = &[
-            // Packet ID
-            0x00, 0x01,
-            // Message kind
-            0x00,
-            // Session ID
-            0x00, 0x01,
-            // Init sequence
-            0x00, 0x01,
-            // Options (has name)
-            0x00, 0x01,
-            // Session name
-            b'h', b'e', b'l', b'l', b'o', 0x00,
-        ][..];
-        assert_eq!(MessageFrame::decode(data), (Ok((EMPTY, MessageFrame {   
-            packet_id: 1,
-            message: Message::Syn(SynMessage {
-                sess_id: 1,
-                init_seq: 1,
-                opts: MessageOption::NAME,
-                sess_name: "hello"
-            }),
-        }))));
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::SYN as u8, // Message kind
+                0x00, 0x01, // Session ID
+                0x00, 0x01, // Init sequence
+                0x00, 0x01, // Options (has name)
+                b'h', b'e', b'l', b'l', b'o', 0x00, // Session name
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Syn(SynMessage {
+                    sess_id: 1,
+                    init_seq: 1,
+                    opts: MessageOption::NAME,
+                    sess_name: "hello",
+                }),
+            },
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_msg() {
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::MSG as u8, // Message kind
+                0x00, 0x01, // Session ID
+                0x00, 0x02, // SEQ
+                0x00, 0x03, // ACK
+                b'h', b'e', b'l', b'l', b'o', // Data
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Msg(MsgMessage {
+                    sess_id: 1,
+                    seq: 2,
+                    ack: 3,
+                    data: b"hello",
+                }),
+            },
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_fin() {
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::FIN as u8, // Message kind
+                0x00, 0x01, // Session ID
+                b'd', b'r', b'a', b'g', b'o', b'n', b's', 0x00, // Reason
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Fin(FinMessage {
+                    sess_id: 1,
+                    reason: "dragons",
+                }),
+            },
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_enc_init() {
+        fn truncate_arr(mut arr: ArrayVec<[u8; 16]>, new_len: usize) -> ArrayVec<[u8; 16]> {
+            arr.truncate(new_len);
+            arr
+        }
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::ENC as u8, // Message kind
+                0x00, 0x01, // Session ID
+                EncryptionKind::INIT as u8, // Encryption kind
+                0x00, 0x02, // Flags
+                0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, // Pubkey X (1)
+                0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x00, 0x00, // Pubkey X (2)
+                0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, // Pubkey Y (1)
+                0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, 0x30, 0x34, // Pubkey Y (2)
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Enc(EncMessage {
+                    sess_id: 1,
+                    flags: 2,
+                    body: EncMessageBody::Init {
+                        public_key_x: truncate_arr(ArrayVec::from([3u8; 16]), 15),
+                        public_key_y: truncate_arr(ArrayVec::from([4u8; 16]), 16),
+                    },
+                }),
+            },
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_enc_auth() {
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::ENC as u8, // Message kind
+                0x00, 0x01, // Session ID
+                EncryptionKind::AUTH as u8, // Encryption kind
+                0x00, 0x02, // Flags
+                0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, // Authenticator (1)
+                0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, 0x30, 0x33, // Authenticator (2)
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Enc(EncMessage {
+                    sess_id: 1,
+                    flags: 2,
+                    body: EncMessageBody::Auth {
+                        authenticator: ArrayVec::from([3u8; 16]),
+                    },
+                }),
+            },
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_ping() {
+        assert_msg_encdec_works(
+            &[
+                0x00, 0x01, // Packet ID
+                MessageKind::PING as u8, // Message kind
+                0x00, 0x01, // Session ID
+                0x00, 0x02, // Ping ID
+                b'd', b'r', b'a', b'g', b'o', b'n', b's', 0x00, // Data
+            ],
+            MessageFrame {
+                packet_id: 1,
+                message: Message::Ping(PingMessage {
+                    sess_id: 1,
+                    ping_id: 2,
+                    data: "dragons",
+                }),
+            },
+        );
     }
 }
