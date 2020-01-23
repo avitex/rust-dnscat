@@ -359,7 +359,7 @@ impl EncMessageBody {
     }
 }
 
-impl<'a> Encode for EncMessageBody {
+impl Encode for EncMessageBody {
     fn encode<B: BufMut>(&self, b: &mut B) {
         match self {
             Self::Init {
