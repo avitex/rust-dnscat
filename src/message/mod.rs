@@ -67,21 +67,43 @@ impl From<nom::Error<()>> for MessageError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message<'a> {
     Syn(SynMessage<'a>),
-    //Msg(MsgMessage<'a>),
-    //Fin(FinMessage<'a>),
+    Msg(MsgMessage<'a>),
+    Fin(FinMessage<'a>),
     //Enc(EncMessage<'a>),
     //Ping(PingMessage<'a>),
 }
 
 impl<'a> Message<'a> {
+    pub fn kind(&self) -> MessageKind {
+        match self {
+            Self::Syn(_) => MessageKind::SYN,
+            Self::Msg(_) => MessageKind::MSG,
+            Self::Fin(_) => MessageKind::FIN,
+            // Self::Enc(_) => MessageKind::ENC,
+            // Self::Ping(_) => MessageKind::PING,
+        }
+    }
+
     pub fn decode_kind(kind: MessageKind, b: &'a [u8]) -> Result<(&'a [u8], Self), MessageError> {
         match kind {
             MessageKind::SYN => SynMessage::decode(b).map(|(b, m)| (b, Self::Syn(m))),
-            _ => unimplemented!()
-            // MessageKind::MSG => SynMessage::decode(b).map(|(b, m)| (b, Self::Msg(m))),
-            // MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
+            MessageKind::MSG => MsgMessage::decode(b).map(|(b, m)| (b, Self::Msg(m))),
+            MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
             // MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
             // MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
+            _ => unimplemented!()
+        }
+    }
+}
+
+impl<'a> Encode for Message<'a> {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        match self {
+            Self::Syn(m) => m.encode(b),
+            Self::Msg(m) => m.encode(b),
+            Self::Fin(m) => m.encode(b),
+            // Self::Enc(m) => m.encode(b),
+            // Self::Ping(m) => m.encode(b),
         }
     }
 }
@@ -102,6 +124,14 @@ impl<'a> Decode<'a> for MessageFrame<'a> {
             .ok_or_else(|| MessageError::UnknownKind(message_kind))?;
         let (b, message) = Message::decode_kind(message_kind, b)?;
         Ok((b, Self { packet_id, message }))
+    }
+}
+
+impl<'a> Encode for MessageFrame<'a> {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        b.put_u16(self.packet_id);
+        b.put_u8(self.message.kind() as u8);
+        self.message.encode(b);
     }
 }
 
@@ -183,6 +213,77 @@ impl<'a> Encode for SynMessage<'a> {
             b.put_slice(sess_name_bytes);
             b.put_u8(0);
         }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// MSG
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MsgMessage<'a> {
+    sess_id: u16,
+    seq: u16,
+    ack: u16,
+    data: &'a [u8],
+}
+
+impl<'a> Decode<'a> for MsgMessage<'a> {
+    type Error = MessageError;
+
+    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+        let (b, sess_id) = nom::be_u16(b)?;
+        let (b, seq) = nom::be_u16(b)?;
+        let (data, ack) = nom::be_u16(b)?;
+        Ok((
+            &[],
+            Self {
+                sess_id,
+                seq,
+                ack,
+                data,
+            },
+        ))
+    }
+}
+
+impl<'a> Encode for MsgMessage<'a> {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        b.put_u16(self.sess_id);
+        b.put_u16(self.seq);
+        b.put_u16(self.ack);
+        b.put_slice(self.data);
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// MSG
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FinMessage<'a> {
+    sess_id: u16,
+    reason: &'a str,
+}
+
+impl<'a> Decode<'a> for FinMessage<'a> {
+    type Error = MessageError;
+
+    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+        let (b, sess_id) = nom::be_u16(b)?;
+        let (b, reason) = nom::nt_string(b)?;
+        Ok((
+            b,
+            Self {
+                sess_id,
+                reason,
+            },
+        ))
+    }
+}
+
+impl<'a> Encode for FinMessage<'a> {
+    fn encode<B: BufMut>(&self, b: &mut B) {
+        b.put_u16(self.sess_id);
+        b.put_slice(self.reason.as_bytes());
     }
 }
 
