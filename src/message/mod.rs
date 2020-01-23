@@ -76,11 +76,12 @@ where
     I: AsRef<[u8]>,
 {
     fn from(err: parse::Error<(I, parse::ErrorKind)>) -> Self {
-        match err {
-            parse::Error::Error((i, kind)) => Self::Parse(i.as_ref().to_vec(), kind),
-            parse::Error::Failure((i, kind)) => Self::Parse(i.as_ref().to_vec(), kind),
-            parse::Error::Incomplete(needed) => Self::Incomplete(needed),
-        }
+        let (i, kind) = match err {
+            parse::Error::Error((i, kind)) => (i, kind),
+            parse::Error::Failure((i, kind)) => (i, kind),
+            parse::Error::Incomplete(needed) => return Self::Incomplete(needed),
+        };
+        Self::Parse(i.as_ref().to_vec(), kind)
     }
 }
 
@@ -368,7 +369,7 @@ impl<'a> Encode for EncMessageBody {
                 encode_enc_hex_part(b, &public_key_x[..]);
                 encode_enc_hex_part(b, &public_key_y[..]);
             }
-            Self::Auth { authenticator } => {
+            Self::Auth { ref authenticator } => {
                 encode_enc_hex_part(b, &authenticator[..]);
             }
         }
