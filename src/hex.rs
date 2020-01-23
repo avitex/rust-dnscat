@@ -114,4 +114,12 @@ mod tests {
         assert_eq!(hex_byte(0x0F, 0x00), 0xF0);
         assert_eq!(hex_byte(0x0F, 0x0F), 0xFF);
     }
+
+    #[test]
+    fn test_byte_nibbles() {
+        assert_eq!(byte_nibbles(0x00), (0x00, 0x00));
+        assert_eq!(byte_nibbles(0x0F), (0x00, 0x0F));
+        assert_eq!(byte_nibbles(0xF0), (0x0F, 0x00));
+        assert_eq!(byte_nibbles(0xFF), (0x0F, 0x0F));
+    }
 }
