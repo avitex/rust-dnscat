@@ -12,10 +12,6 @@ pub use self::ip::*;
 use crate::transport::{Decode, Encode};
 use crate::util::nom;
 
-pub trait Message<'a>: Encode + Decode<'a> {
-    fn kind() -> MessageKind;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum MessageKind {
@@ -24,6 +20,19 @@ pub enum MessageKind {
     FIN = 0x02,
     ENC = 0x03,
     PING = 0xFF,
+}
+
+impl MessageKind {
+    pub fn from_u8(kind: u8) -> Option<Self> {
+        match kind {
+            0x00 => Some(Self::SYN),
+            0x01 => Some(Self::MSG),
+            0x02 => Some(Self::FIN),
+            0x03 => Some(Self::ENC),
+            0xFF => Some(Self::PING),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,6 +47,7 @@ pub enum MessageError {
     Parse,
     TooLong,
     Utf8(Utf8Error),
+    UnknownKind(u8),
     MissingSequence(u8),
     LengthOutOfBounds { min: usize, max: usize, len: usize },
 }
@@ -54,10 +64,46 @@ impl From<nom::Error<()>> for MessageError {
     }
 }
 
-// pub struct MessageFrame<M: Message> {
-//     packet_id: u16,
-//     message: M,
-// }
+#[derive(Debug, Clone, PartialEq)]
+pub enum Message<'a> {
+    Syn(SynMessage<'a>),
+    //Msg(MsgMessage<'a>),
+    //Fin(FinMessage<'a>),
+    //Enc(EncMessage<'a>),
+    //Ping(PingMessage<'a>),
+}
+
+impl<'a> Message<'a> {
+    pub fn decode_kind(kind: MessageKind, b: &'a [u8]) -> Result<(&'a [u8], Self), MessageError> {
+        match kind {
+            MessageKind::SYN => SynMessage::decode(b).map(|(b, m)| (b, Self::Syn(m))),
+            _ => unimplemented!()
+            // MessageKind::MSG => SynMessage::decode(b).map(|(b, m)| (b, Self::Msg(m))),
+            // MessageKind::FIN => FinMessage::decode(b).map(|(b, m)| (b, Self::Fin(m))),
+            // MessageKind::ENC => EncMessage::decode(b).map(|(b, m)| (b, Self::Enc(m))),
+            // MessageKind::PING => PingMessage::decode(b).map(|(b, m)| (b, Self::Ping(m))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageFrame<'a> {
+    pub packet_id: u16,
+    pub message: Message<'a>,
+}
+
+impl<'a> Decode<'a> for MessageFrame<'a> {
+    type Error = MessageError;
+
+    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
+        let (b, packet_id) = nom::be_u16(b)?;
+        let (b, message_kind) = nom::be_u8(b)?;
+        let message_kind = MessageKind::from_u8(message_kind)
+            .ok_or_else(|| MessageError::UnknownKind(message_kind))?;
+        let (b, message) = Message::decode_kind(message_kind, b)?;
+        Ok((b, Self { packet_id, message }))
+    }
+}
 
 bitflags! {
     pub struct MessageOption: u16 {
@@ -88,13 +134,7 @@ bitflags! {
 ///////////////////////////////////////////////////////////////////////////////
 // SYN
 
-// (uint16_t) packet_id
-// (uint8_t) message_type [0x00]
-// (uint16_t) session_id
-// (uint16_t) initial sequence number
-// (uint16_t) options
-// If OPT_NAME is set:
-// (ntstring) session_name
+#[derive(Debug, Clone, PartialEq)]
 pub struct SynMessage<'a> {
     sess_id: u16,
     init_seq: u16,
@@ -143,5 +183,40 @@ impl<'a> Encode for SynMessage<'a> {
             b.put_slice(sess_name_bytes);
             b.put_u8(0);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EMPTY: &[u8] = &[];
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_parse_message_syn() {
+        let data = &[
+            // Packet ID
+            0x00, 0x01,
+            // Message kind
+            0x00,
+            // Session ID
+            0x00, 0x01,
+            // Init sequence
+            0x00, 0x01,
+            // Options (has name)
+            0x00, 0x01,
+            // Session name
+            b'h', b'e', b'l', b'l', b'o', 0x00,
+        ][..];
+        assert_eq!(MessageFrame::decode(data), (Ok((EMPTY, MessageFrame {
+            packet_id: 1,
+            message: Message::Syn(SynMessage {
+                sess_id: 1,
+                init_seq: 1,
+                opts: MessageOption::NAME,
+                sess_name: "hello"
+            }),
+        }))));
     }
 }
