@@ -2,8 +2,11 @@ pub mod dns;
 
 use bytes::BufMut;
 
+pub use futures::io::{AsyncRead, AsyncWrite};
+
+/// Synchronously encode into a buffer.
 pub trait Encode {
-    /// Encode into a buffer.
+    /// Encode into a `BufMut` buffer.
     ///
     /// # Panics
     ///
@@ -11,10 +14,14 @@ pub trait Encode {
     fn encode<B: BufMut>(&self, buf: &mut B);
 }
 
+/// Synchronously decode from a buffer.
 pub trait Decode<'a>: Sized {
+    /// Decode error type.
     type Error;
 
-    /// Decode from a buffer.
+    /// Decode from a `&[u8]` buffer.
+    /// 
+    /// Returns a tuple of the remaining buffer not used and the decoded type
+    /// on success or a decode error on failure.
     fn decode(buf: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error>;
 }
-

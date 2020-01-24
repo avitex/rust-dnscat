@@ -66,13 +66,13 @@ impl<'a> Decode<'a> for Packet<'a> {
 pub enum PacketBody<'a> {
     /// `SYN` packet body.
     Syn(SynPacket<'a>),
-     /// `MSG` packet body.
+    /// `MSG` packet body.
     Msg(MsgPacket<'a>),
-     /// `FIN` packet body.
+    /// `FIN` packet body.
     Fin(FinPacket<'a>),
-     /// `ENC` packet body.
+    /// `ENC` packet body.
     Enc(EncPacket),
-     /// `PING` packet body.
+    /// `PING` packet body.
     Ping(PingPacket<'a>),
 }
 
@@ -89,7 +89,13 @@ impl<'a> PacketBody<'a> {
     }
 
     /// Decodes a packet body given the packet kind.
-    pub fn decode_kind(kind: PacketKind, b: &'a [u8]) -> Result<(&'a [u8], Self), PacketDecodeError> {
+    /// 
+    /// Returns a tuple of the remaining buffer not used and the decoded packet body
+    /// on success or a packet decode error on failure.
+    pub fn decode_kind(
+        kind: PacketKind,
+        b: &'a [u8],
+    ) -> Result<(&'a [u8], Self), PacketDecodeError> {
         match kind {
             PacketKind::SYN => SynPacket::decode(b).map(|(b, m)| (b, Self::Syn(m))),
             PacketKind::MSG => MsgPacket::decode(b).map(|(b, m)| (b, Self::Msg(m))),
@@ -448,9 +454,9 @@ impl EncPacket {
     }
 
     /// Retrives the crypto flags.
-    /// 
+    ///
     /// # Notes
-    /// 
+    ///
     /// This field is currently not used in the original specification.
     pub fn crypto_flags(&self) -> u16 {
         self.cryp_flags
@@ -495,7 +501,7 @@ impl<'a> Decode<'a> for EncPacket {
 pub enum EncPacketBody {
     /// `INIT` encyption packet body.
     Init {
-        /// `X` component of public key. 
+        /// `X` component of public key.
         public_key_x: ArrayVec<[u8; 16]>,
         /// `Y` component of public key.
         public_key_y: ArrayVec<[u8; 16]>,
@@ -517,6 +523,9 @@ impl EncPacketBody {
     }
 
     /// Decodes a encryption packet body given the encryption packet kind.
+    /// 
+    /// Returns a tuple of the remaining buffer not used and the decoded encryption 
+    /// packet body on success or a packet decode error on failure.
     pub fn decode_kind(kind: EncPacketKind, b: &[u8]) -> Result<(&[u8], Self), PacketDecodeError> {
         match kind {
             EncPacketKind::INIT => {

@@ -499,7 +499,10 @@ mod tests {
 
     #[test]
     fn test_ip_message_empty() {
-        assert_eq!(parse_blocks(vec![]), Err(IpMessageError::MissingSequence(0)));
+        assert_eq!(
+            parse_blocks(vec![]),
+            Err(IpMessageError::MissingSequence(0))
+        );
     }
 
     #[test]
