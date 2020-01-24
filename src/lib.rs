@@ -1,11 +1,11 @@
-pub mod message;
+pub mod packet;
 pub mod transport;
-
-mod private {
-    pub trait Sealed {}
-}
 
 mod util {
     pub mod hex;
     pub mod parse;
+}
+
+mod private {
+    pub trait Sealed {}
 }

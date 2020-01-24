@@ -1,8 +1,15 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{cmp, iter};
 
-use crate::message::MessageError;
 use crate::private::Sealed;
+
+/// Enum of all possible errors when handling IP messages.
+#[derive(Debug, PartialEq)]
+pub enum IpMessageError {
+    TooLong,
+    MissingSequence(u8),
+    LengthOutOfBounds { min: usize, max: usize, len: usize },
+}
 
 /// An IP message consists of one head block and zero or more tail blocks,
 /// where the block structures are IP addresses.
@@ -103,7 +110,7 @@ where
     ///
     /// Returns `MessageError::TooLong` if the blocks pushed exceed the max
     /// for a message.
-    pub fn extend_iter<I, B>(&mut self, iter: I) -> Result<(), MessageError>
+    pub fn extend_iter<I, B>(&mut self, iter: I) -> Result<(), IpMessageError>
     where
         I: IntoIterator<Item = B>,
         B: IntoIpMessageBlock<Block = T>,
@@ -111,7 +118,7 @@ where
         let iter = iter.into_iter();
         if let (_, Some(upper_size)) = iter.size_hint() {
             if upper_size > Self::max_data_len() {
-                return Err(MessageError::TooLong);
+                return Err(IpMessageError::TooLong);
             }
             if self.blocks.capacity() < upper_size {
                 self.blocks.reserve(upper_size - self.block_capacity());
@@ -133,7 +140,7 @@ where
     /// # Errors
     ///
     /// Returns `Message::TooLong` the message has the max number of blocks.
-    pub fn push_block<B>(&mut self, block: B) -> Result<(), MessageError>
+    pub fn push_block<B>(&mut self, block: B) -> Result<(), IpMessageError>
     where
         B: IntoIpMessageBlock<Block = T>,
     {
@@ -141,7 +148,7 @@ where
             self.push_block_unchecked(block);
             Ok(())
         } else {
-            Err(MessageError::TooLong)
+            Err(IpMessageError::TooLong)
         }
     }
 
@@ -251,14 +258,14 @@ where
     ///
     /// Returns `MessageError::MissingSequence` if there is no head block, or
     /// is missing a sequence number in the given blocks.
-    pub fn to_data(&self) -> Result<Vec<u8>, MessageError> {
+    pub fn to_data(&self) -> Result<Vec<u8>, IpMessageError> {
         // Now get the indicated data length from the first block
-        let data_len = self.data_len().ok_or(MessageError::MissingSequence(0))?;
+        let data_len = self.data_len().ok_or(IpMessageError::MissingSequence(0))?;
         // Calcuate the bounds for the data length
         let (data_len_min, data_len_max) = self.data_len_bounds();
         // Check the data is within the data length bounds
         if data_len < data_len_min || data_len > data_len_max {
-            return Err(MessageError::LengthOutOfBounds {
+            return Err(IpMessageError::LengthOutOfBounds {
                 len: data_len,
                 min: data_len_min,
                 max: data_len_max,
@@ -272,7 +279,7 @@ where
             let block_data = match block_ref.sequence() {
                 0 if seq == 0 => block_ref.head_data(),
                 block_seq if block_seq == seq => block_ref.tail_data(),
-                _ => return Err(MessageError::MissingSequence(seq)),
+                _ => return Err(IpMessageError::MissingSequence(seq)),
             };
             if data_remaining < block_data.len() {
                 data.extend_from_slice(&block_data[0..data_remaining]);
@@ -455,7 +462,7 @@ impl Sealed for Ipv6MessageBlock {}
 mod tests {
     use super::*;
 
-    fn parse_blocks(blocks: Vec<Ipv4Addr>) -> Result<Vec<u8>, MessageError> {
+    fn parse_blocks(blocks: Vec<Ipv4Addr>) -> Result<Vec<u8>, IpMessageError> {
         let mut msg = IpMessage::new();
         msg.extend_iter(blocks).unwrap();
         msg.sort_blocks();
@@ -474,7 +481,7 @@ mod tests {
     fn test_ip_message_length_invalid() {
         assert_eq!(
             parse_blocks(vec![Ipv4Addr::new(0, 3, 0, 0)]),
-            Err(MessageError::LengthOutOfBounds {
+            Err(IpMessageError::LengthOutOfBounds {
                 len: 3,
                 min: 0,
                 max: 2,
@@ -482,7 +489,7 @@ mod tests {
         );
         assert_eq!(
             parse_blocks(vec![Ipv4Addr::new(0, 6, 0, 0), Ipv4Addr::new(1, 0, 0, 0)]),
-            Err(MessageError::LengthOutOfBounds {
+            Err(IpMessageError::LengthOutOfBounds {
                 len: 6,
                 min: 3,
                 max: 5,
@@ -492,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_ip_message_empty() {
-        assert_eq!(parse_blocks(vec![]), Err(MessageError::MissingSequence(0)));
+        assert_eq!(parse_blocks(vec![]), Err(IpMessageError::MissingSequence(0)));
     }
 
     #[test]
@@ -503,7 +510,7 @@ mod tests {
                 Ipv4Addr::new(2, 0, 0, 0),
                 Ipv4Addr::new(0, 8, 0, 0),
             ]),
-            Err(MessageError::MissingSequence(1))
+            Err(IpMessageError::MissingSequence(1))
         );
     }
 }

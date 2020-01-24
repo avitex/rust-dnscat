@@ -17,3 +17,4 @@ pub trait Decode<'a>: Sized {
     /// Decode from a buffer.
     fn decode(buf: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error>;
 }
+

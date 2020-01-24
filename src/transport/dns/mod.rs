@@ -1,3 +1,7 @@
+mod ip;
+
+pub use self::ip::*;
+
 // const MAX_DOMAIN_NAME_LEN: usize = 253;
 // pub type DOMAIN_NAME_BYTE_ARRAY = [u8; MAX_DOMAIN_NAME_LEN];
 
