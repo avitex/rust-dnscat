@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-//! Packet support for establishing a connection in a transport.
 
 use std::str::{self, Utf8Error};
 

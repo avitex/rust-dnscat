@@ -1,3 +1,4 @@
+/// Packet support for establishing a connection in a transport.
 pub mod packet;
 pub mod transport;
 
