@@ -89,7 +89,7 @@ impl<'a> PacketBody<'a> {
     }
 
     /// Decodes a packet body given the packet kind.
-    /// 
+    ///
     /// Returns a tuple of the remaining buffer not used and the decoded packet body
     /// on success or a packet decode error on failure.
     pub fn decode_kind(
@@ -523,8 +523,8 @@ impl EncPacketBody {
     }
 
     /// Decodes a encryption packet body given the encryption packet kind.
-    /// 
-    /// Returns a tuple of the remaining buffer not used and the decoded encryption 
+    ///
+    /// Returns a tuple of the remaining buffer not used and the decoded encryption
     /// packet body on success or a packet decode error on failure.
     pub fn decode_kind(kind: EncPacketKind, b: &[u8]) -> Result<(&[u8], Self), PacketDecodeError> {
         match kind {
