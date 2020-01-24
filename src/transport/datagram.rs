@@ -63,10 +63,3 @@ where
         T::decode(buf).map(|(b, payload)| (b, Self::new(payload)))
     }
 }
-
-// /// Returns `true` if encode overflowed buf, `false` if it fit.
-// pub(crate) fn encode<B: BufMut>(&self, buf: &mut B, limit: usize) -> bool {
-//     let mut buf = BoundedBufMut::new(buf, limit);
-//     self.payload.encode(&mut buf);
-//     buf.has_overflown()
-// }
