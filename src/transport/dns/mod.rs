@@ -10,7 +10,6 @@ pub use self::ip::*;
 pub use self::name::*;
 
 use crate::transport::{Datagram, Decode, Encode};
-use crate::util::BoundedBufMut;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DnsRecordType {
@@ -68,13 +67,10 @@ where
     {
         // Get the datagram size limit from DNS endpoint settings.
         let limit = self.endpoint.encode_data_limit();
-        // Wrap the internal transmission buffer with bounding box that
-        // prevents overflowing the datagram limit for the endpoint.
-        let mut bounded_buf = BoundedBufMut::new(&mut self.tx_buf, limit);
         // Encode the datagram into the buffer.
-        datagram.encode(&mut bounded_buf);
+        datagram.encode(&mut self.tx_buf);
         // Validate the datagram did not overflow the buffer limit.
-        if bounded_buf.has_overflown() {
+        if self.tx_buf.len() > limit {
             self.tx_buf.clear();
             return future::Either::Left(future::err(DnsTransportError::DatagramOverflow));
         }
