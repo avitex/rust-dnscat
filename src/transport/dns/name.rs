@@ -10,9 +10,9 @@
 //     InvalidNibble(u8),
 // }
 
-pub struct DnMessage<'a> {
-    name: &'a [u8],
-}
+// pub struct DnMessage<'a> {
+//     name: &'a [u8],
+// }
 
 // impl<'a> DnMessage<'a> {
 //     pub fn new_with_tag(name: &'a [u8], tag: &'a str) -> Self {}

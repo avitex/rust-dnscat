@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use bytes::BufMut;
 
 /// Synchronously encode into a buffer.
@@ -26,40 +24,6 @@ pub trait Decode<'a>: Sized {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-pub struct Datagram<'a, T> {
-    payload: T,
-    lifetime: PhantomData<&'a ()>,
-}
+pub trait Datagram<'a>: Encode + Decode<'a> + Send + 'a {}
 
-impl<'a, T> Datagram<'a, T> {
-    pub fn new(payload: T) -> Self {
-        Self {
-            payload,
-            lifetime: PhantomData,
-        }
-    }
-
-    pub fn payload(&self) -> &T {
-        &self.payload
-    }
-}
-
-impl<'a, T> Encode for Datagram<'a, T>
-where
-    T: Encode,
-{
-    fn encode<B: BufMut>(&self, buf: &mut B) {
-        self.payload.encode(buf);
-    }
-}
-
-impl<'a, T> Decode<'a> for Datagram<'a, T>
-where
-    T: Decode<'a>,
-{
-    type Error = T::Error;
-
-    fn decode(buf: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        T::decode(buf).map(|(b, payload)| (b, Self::new(payload)))
-    }
-}
+impl<'a, T> Datagram<'a> for T where T: Encode + Decode<'a> + Send + 'a {}
