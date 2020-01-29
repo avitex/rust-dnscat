@@ -2,27 +2,33 @@
 
 use std::str::{self, Utf8Error};
 
-use arrayvec::ArrayVec;
 use bitflags::bitflags;
-use bytes::BufMut;
+use bytes::{Buf, BufMut, Bytes};
 
-use crate::transport::{Decode, Encode};
-use crate::util::{hex, parse};
+use crate::encdec::{Decode, Encode};
+use crate::util::parse::{self, InvalidHexByte, Needed, NoNullTermError};
+use crate::util::{hex, StringBytes};
 
 ///////////////////////////////////////////////////////////////////////////////
 // Packet
 
 /// Container for all supported packets.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Packet<'a> {
+pub struct Packet {
     id: u16,
-    body: PacketBody<'a>,
+    body: PacketBody,
 }
 
-impl<'a> Packet<'a> {
+impl Packet {
     /// Constructs a new packet given a packet ID and body.
-    pub fn new(id: u16, body: PacketBody<'a>) -> Self {
-        Self { id, body }
+    pub fn new<B>(id: u16, body: B) -> Self
+    where
+        B: Into<PacketBody>,
+    {
+        Self {
+            id,
+            body: body.into(),
+        }
     }
 
     /// Retrives the packet ID.
@@ -36,12 +42,12 @@ impl<'a> Packet<'a> {
     }
 
     /// Retrives a reference to the packet body.
-    pub fn body(&self) -> &PacketBody<'a> {
+    pub fn body(&self) -> &PacketBody {
         &self.body
     }
 }
 
-impl<'a> Encode for Packet<'a> {
+impl Encode for Packet {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.id);
         b.put_u8(self.body.kind() as u8);
@@ -49,34 +55,34 @@ impl<'a> Encode for Packet<'a> {
     }
 }
 
-impl<'a> Decode<'a> for Packet<'a> {
-    type Error = PacketDecodeError<'a>;
+impl Decode for Packet {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, id) = parse::be_u16(b)?;
-        let (b, kind) = parse::be_u8(b)?;
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let id = parse::be_u16(b)?;
+        let kind = parse::be_u8(b)?;
         let kind = PacketKind::from_u8(kind).ok_or_else(|| PacketDecodeError::UnknownKind(kind))?;
-        let (b, body) = PacketBody::decode_kind(kind, b)?;
-        Ok((b, Self::new(id, body)))
+        let body = PacketBody::decode_kind(kind, b)?;
+        Ok(Self::new(id, body))
     }
 }
 
 /// Enum of all supported packet bodies.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PacketBody<'a> {
+pub enum PacketBody {
     /// `SYN` packet body.
-    Syn(SynPacket<'a>),
+    Syn(SynPacket),
     /// `MSG` packet body.
-    Msg(MsgPacket<'a>),
+    Msg(MsgPacket),
     /// `FIN` packet body.
-    Fin(FinPacket<'a>),
+    Fin(FinPacket),
     /// `ENC` packet body.
     Enc(EncPacket),
     /// `PING` packet body.
-    Ping(PingPacket<'a>),
+    Ping(PingPacket),
 }
 
-impl<'a> PacketBody<'a> {
+impl PacketBody {
     /// Retrives the packet kind.
     pub fn kind(&self) -> PacketKind {
         match self {
@@ -92,21 +98,18 @@ impl<'a> PacketBody<'a> {
     ///
     /// Returns a tuple of the remaining buffer not used and the decoded packet body
     /// on success or a packet decode error on failure.
-    pub fn decode_kind(
-        kind: PacketKind,
-        b: &'a [u8],
-    ) -> Result<(&'a [u8], Self), PacketDecodeError> {
+    pub fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
-            PacketKind::SYN => SynPacket::decode(b).map(|(b, m)| (b, Self::Syn(m))),
-            PacketKind::MSG => MsgPacket::decode(b).map(|(b, m)| (b, Self::Msg(m))),
-            PacketKind::FIN => FinPacket::decode(b).map(|(b, m)| (b, Self::Fin(m))),
-            PacketKind::ENC => EncPacket::decode(b).map(|(b, m)| (b, Self::Enc(m))),
-            PacketKind::PING => PingPacket::decode(b).map(|(b, m)| (b, Self::Ping(m))),
+            PacketKind::SYN => SynPacket::decode(b).map(Self::Syn),
+            PacketKind::MSG => MsgPacket::decode(b).map(Self::Msg),
+            PacketKind::FIN => FinPacket::decode(b).map(Self::Fin),
+            PacketKind::ENC => EncPacket::decode(b).map(Self::Enc),
+            PacketKind::PING => PingPacket::decode(b).map(Self::Ping),
         }
     }
 }
 
-impl<'a> Encode for PacketBody<'a> {
+impl Encode for PacketBody {
     fn encode<B: BufMut>(&self, b: &mut B) {
         match self {
             Self::Syn(m) => m.encode(b),
@@ -115,6 +118,36 @@ impl<'a> Encode for PacketBody<'a> {
             Self::Enc(m) => m.encode(b),
             Self::Ping(m) => m.encode(b),
         }
+    }
+}
+
+impl From<SynPacket> for PacketBody {
+    fn from(body: SynPacket) -> Self {
+        PacketBody::Syn(body)
+    }
+}
+
+impl From<MsgPacket> for PacketBody {
+    fn from(body: MsgPacket) -> Self {
+        PacketBody::Msg(body)
+    }
+}
+
+impl From<FinPacket> for PacketBody {
+    fn from(body: FinPacket) -> Self {
+        PacketBody::Fin(body)
+    }
+}
+
+impl From<EncPacket> for PacketBody {
+    fn from(body: EncPacket) -> Self {
+        PacketBody::Enc(body)
+    }
+}
+
+impl From<PingPacket> for PacketBody {
+    fn from(body: PingPacket) -> Self {
+        PacketBody::Ping(body)
     }
 }
 
@@ -182,10 +215,10 @@ bitflags! {
 // Packet Error
 
 /// Enum of all possible errors when decoding packets.
-#[derive(Debug, PartialEq)]
-pub enum PacketDecodeError<'a> {
-    /// Internal parse error with input that failed, and the error kind.
-    Parse(&'a [u8], parse::ErrorKind),
+#[derive(Debug, Clone, PartialEq)]
+pub enum PacketDecodeError {
+    /// No null term error.
+    NoNullTerm,
     /// UTF8 decode error.
     Utf8(Utf8Error),
     /// Unknown packet kind.
@@ -193,22 +226,32 @@ pub enum PacketDecodeError<'a> {
     /// Unknown encryption packet kind.
     UnknownEncKind(u8),
     /// Incomplete input error.
-    Incomplete(parse::Needed),
+    Incomplete(usize),
+    /// Nibble pair error.
+    InvalidHexByte(u8, u8),
 }
 
-impl<'a> From<Utf8Error> for PacketDecodeError<'a> {
+impl From<NoNullTermError> for PacketDecodeError {
+    fn from(_: NoNullTermError) -> Self {
+        Self::NoNullTerm
+    }
+}
+
+impl From<Utf8Error> for PacketDecodeError {
     fn from(err: Utf8Error) -> Self {
         Self::Utf8(err)
     }
 }
 
-impl<'a> From<parse::Error<(&'a [u8], parse::ErrorKind)>> for PacketDecodeError<'a> {
-    fn from(err: parse::Error<(&'a [u8], parse::ErrorKind)>) -> Self {
-        match err {
-            parse::Error::Error((i, kind)) => Self::Parse(i, kind),
-            parse::Error::Failure((i, kind)) => Self::Parse(i, kind),
-            parse::Error::Incomplete(needed) => Self::Incomplete(needed),
-        }
+impl From<InvalidHexByte> for PacketDecodeError {
+    fn from(err: InvalidHexByte) -> Self {
+        Self::InvalidHexByte(err.0, err.1)
+    }
+}
+
+impl From<Needed> for PacketDecodeError {
+    fn from(needed: Needed) -> Self {
+        Self::Incomplete(needed.0)
     }
 }
 
@@ -217,14 +260,14 @@ impl<'a> From<parse::Error<(&'a [u8], parse::ErrorKind)>> for PacketDecodeError<
 
 /// A `SYN` packet.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SynPacket<'a> {
+pub struct SynPacket {
     sess_id: u16,
     init_seq: u16,
     flags: PacketFlags,
-    sess_name: &'a str,
+    sess_name: StringBytes,
 }
 
-impl<'a> SynPacket<'a> {
+impl SynPacket {
     /// Contructs a new `SYN` packet.
     ///
     /// # Notes
@@ -234,26 +277,28 @@ impl<'a> SynPacket<'a> {
     /// # Panics
     ///
     /// Panics if session flag or option is set, but has an empty str value.
-    pub fn new(
-        sess_id: u16,
-        init_seq: u16,
-        mut flags: PacketFlags,
-        sess_name: Option<&'a str>,
-    ) -> Self {
-        if let Some(sess_name) = sess_name {
+    pub fn new<S>(sess_id: u16, init_seq: u16, mut flags: PacketFlags, sess_name: Option<S>) -> Self
+    where
+        S: Into<StringBytes>,
+    {
+        let sess_name = if let Some(sess_name) = sess_name.map(Into::into) {
             assert!(
                 !sess_name.is_empty(),
                 "session name is some but has empty value"
             );
             flags.insert(PacketFlags::NAME);
-        } else if flags.contains(PacketFlags::NAME) {
-            panic!("session name flag is set but has empty value");
+            sess_name
+        } else {
+            if flags.contains(PacketFlags::NAME) {
+                panic!("session name flag is set but has empty value");
+            }
+            StringBytes::new()
         };
         Self {
             sess_id,
             init_seq,
             flags,
-            sess_name: sess_name.unwrap_or(""),
+            sess_name,
         }
     }
 
@@ -273,9 +318,9 @@ impl<'a> SynPacket<'a> {
     }
 
     /// Retrives the session name.
-    pub fn session_name(&self) -> Option<&'a str> {
+    pub fn session_name(&self) -> Option<&str> {
         if self.has_session_name() {
-            Some(self.sess_name)
+            Some(self.sess_name.as_ref())
         } else {
             None
         }
@@ -287,34 +332,32 @@ impl<'a> SynPacket<'a> {
     }
 }
 
-impl<'a> Encode for SynPacket<'a> {
+impl Encode for SynPacket {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.sess_id);
         b.put_u16(self.init_seq);
         b.put_u16(self.flags.bits());
         if self.has_session_name() {
-            let sess_name_bytes = self.sess_name.as_bytes();
-            b.put_slice(sess_name_bytes);
+            b.put_slice(self.sess_name.as_bytes());
             b.put_u8(0);
         }
     }
 }
 
-impl<'a> Decode<'a> for SynPacket<'a> {
-    type Error = PacketDecodeError<'a>;
+impl Decode for SynPacket {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = parse::be_u16(b)?;
-        let (b, init_seq) = parse::be_u16(b)?;
-        let (b, flags_raw) = parse::be_u16(b)?;
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let sess_id = parse::be_u16(b)?;
+        let init_seq = parse::be_u16(b)?;
+        let flags_raw = parse::be_u16(b)?;
         let flags = PacketFlags::from_bits_truncate(flags_raw);
-        let (b, sess_name) = if flags.contains(PacketFlags::NAME) {
-            let (b, sess_name) = parse::nt_string(b)?;
-            (b, Some(sess_name))
+        let sess_name = if flags.contains(PacketFlags::NAME) {
+            Some(parse::nt_string::<PacketDecodeError>(b)?)
         } else {
-            (b, None)
+            None
         };
-        Ok((b, Self::new(sess_id, init_seq, flags, sess_name)))
+        Ok(Self::new(sess_id, init_seq, flags, sess_name))
     }
 }
 
@@ -323,16 +366,16 @@ impl<'a> Decode<'a> for SynPacket<'a> {
 
 /// A `MSG` packet.
 #[derive(Debug, Clone, PartialEq)]
-pub struct MsgPacket<'a> {
+pub struct MsgPacket {
     sess_id: u16,
     seq: u16,
     ack: u16,
-    data: &'a [u8],
+    data: Bytes,
 }
 
-impl<'a> MsgPacket<'a> {
+impl MsgPacket {
     /// Constructs a new `MSG` packet.
-    pub fn new(sess_id: u16, seq: u16, ack: u16, data: &'a [u8]) -> Self {
+    pub fn new(sess_id: u16, seq: u16, ack: u16, data: Bytes) -> Self {
         Self {
             sess_id,
             seq,
@@ -357,28 +400,33 @@ impl<'a> MsgPacket<'a> {
     }
 
     /// Retrieves the message data.
-    pub fn data(&self) -> &'a [u8] {
+    pub fn data(&self) -> &Bytes {
+        &self.data
+    }
+
+    /// Consumes self into the message data.
+    pub fn into_data(self) -> Bytes {
         self.data
     }
 }
 
-impl<'a> Encode for MsgPacket<'a> {
+impl Encode for MsgPacket {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.sess_id);
         b.put_u16(self.seq);
         b.put_u16(self.ack);
-        b.put_slice(self.data);
+        b.put(self.data.clone());
     }
 }
 
-impl<'a> Decode<'a> for MsgPacket<'a> {
-    type Error = PacketDecodeError<'a>;
+impl Decode for MsgPacket {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = parse::be_u16(b)?;
-        let (b, seq) = parse::be_u16(b)?;
-        let (data, ack) = parse::be_u16(b)?;
-        Ok((&[], Self::new(sess_id, seq, ack, data)))
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let sess_id = parse::be_u16(b)?;
+        let seq = parse::be_u16(b)?;
+        let ack = parse::be_u16(b)?;
+        Ok(Self::new(sess_id, seq, ack, b.to_bytes()))
     }
 }
 
@@ -387,15 +435,21 @@ impl<'a> Decode<'a> for MsgPacket<'a> {
 
 /// A `FIN` packet.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FinPacket<'a> {
+pub struct FinPacket {
     sess_id: u16,
-    reason: &'a str,
+    reason: StringBytes,
 }
 
-impl<'a> FinPacket<'a> {
+impl FinPacket {
     /// Constructs a new `FIN` packet.
-    pub fn new(sess_id: u16, reason: &'a str) -> Self {
-        Self { sess_id, reason }
+    pub fn new<S>(sess_id: u16, reason: S) -> Self
+    where
+        S: Into<StringBytes>,
+    {
+        Self {
+            sess_id,
+            reason: reason.into(),
+        }
     }
 
     /// Retrives the session ID.
@@ -404,12 +458,12 @@ impl<'a> FinPacket<'a> {
     }
 
     /// Retrives the reason for disconnect.
-    pub fn reason(&self) -> &'a str {
-        self.reason
+    pub fn reason(&self) -> &str {
+        self.reason.as_ref()
     }
 }
 
-impl<'a> Encode for FinPacket<'a> {
+impl Encode for FinPacket {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.sess_id);
         b.put_slice(self.reason.as_bytes());
@@ -417,13 +471,13 @@ impl<'a> Encode for FinPacket<'a> {
     }
 }
 
-impl<'a> Decode<'a> for FinPacket<'a> {
-    type Error = PacketDecodeError<'a>;
+impl Decode for FinPacket {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = parse::be_u16(b)?;
-        let (b, reason) = parse::nt_string(b)?;
-        Ok((b, Self::new(sess_id, reason)))
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let sess_id = parse::be_u16(b)?;
+        let reason = parse::nt_string::<PacketDecodeError>(b)?;
+        Ok(Self::new(sess_id, reason))
     }
 }
 
@@ -482,17 +536,17 @@ impl Encode for EncPacket {
     }
 }
 
-impl<'a> Decode<'a> for EncPacket {
-    type Error = PacketDecodeError<'a>;
+impl Decode for EncPacket {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = parse::be_u16(b)?;
-        let (b, enc_kind) = parse::be_u8(b)?;
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let sess_id = parse::be_u16(b)?;
+        let enc_kind = parse::be_u8(b)?;
         let enc_kind = EncPacketKind::from_u8(enc_kind)
             .ok_or_else(|| PacketDecodeError::UnknownEncKind(enc_kind))?;
-        let (b, cryp_flags) = parse::be_u16(b)?;
-        let (b, body) = EncPacketBody::decode_kind(enc_kind, b)?;
-        Ok((b, Self::new(sess_id, cryp_flags, body)))
+        let cryp_flags = parse::be_u16(b)?;
+        let body = EncPacketBody::decode_kind(enc_kind, b)?;
+        Ok(Self::new(sess_id, cryp_flags, body))
     }
 }
 
@@ -502,14 +556,14 @@ pub enum EncPacketBody {
     /// `INIT` encyption packet body.
     Init {
         /// `X` component of public key.
-        public_key_x: ArrayVec<[u8; 16]>,
+        public_key_x: Bytes,
         /// `Y` component of public key.
-        public_key_y: ArrayVec<[u8; 16]>,
+        public_key_y: Bytes,
     },
     /// `AUTH` encyption packet body.
     Auth {
         /// Authenticator value.
-        authenticator: ArrayVec<[u8; 16]>,
+        authenticator: Bytes,
     },
 }
 
@@ -526,38 +580,27 @@ impl EncPacketBody {
     ///
     /// Returns a tuple of the remaining buffer not used and the decoded encryption
     /// packet body on success or a packet decode error on failure.
-    pub fn decode_kind(kind: EncPacketKind, b: &[u8]) -> Result<(&[u8], Self), PacketDecodeError> {
+    pub fn decode_kind(kind: EncPacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
-            EncPacketKind::INIT => {
-                let (b, public_key_x) = Self::decode_hex_part(b)?;
-                let (b, public_key_y) = Self::decode_hex_part(b)?;
-                Ok((
-                    b,
-                    Self::Init {
-                        public_key_x,
-                        public_key_y,
-                    },
-                ))
-            }
-            EncPacketKind::AUTH => {
-                let (b, authenticator) = Self::decode_hex_part(b)?;
-                Ok((b, Self::Auth { authenticator }))
-            }
+            EncPacketKind::INIT => Ok(Self::Init {
+                public_key_x: Self::decode_part(b)?,
+                public_key_y: Self::decode_part(b)?,
+            }),
+            EncPacketKind::AUTH => Ok(Self::Auth {
+                authenticator: Self::decode_part(b)?,
+            }),
         }
     }
 
-    fn encode_hex_part<B: BufMut>(b: &mut B, raw: &[u8]) {
-        let mut part = ArrayVec::from([0u8; 32]);
-        let part_len = raw.len() * 2;
-        hex::encode_to_slice(&raw[..], &mut part[..part_len]);
-        b.put_slice(&part[..]);
+    fn decode_part(b: &mut Bytes) -> Result<Bytes, PacketDecodeError> {
+        parse::np_hex_string::<PacketDecodeError>(b, 32)
     }
 
-    fn decode_hex_part(hex: &[u8]) -> Result<(&[u8], ArrayVec<[u8; 16]>), PacketDecodeError> {
-        let mut part = ArrayVec::from([0u8; 16]);
-        let (b, part_len) = parse::np_hex_string(hex, 32, &mut part[..])?;
-        part.truncate(part_len);
-        Ok((b, part))
+    fn encode_part<B: BufMut>(b: &mut B, part: &[u8]) {
+        let mut hex = Vec::with_capacity(32);
+        hex::encode_into_buf(&mut hex, part);
+        hex.resize_with(32, || 0);
+        b.put(hex.as_ref())
     }
 }
 
@@ -568,11 +611,11 @@ impl Encode for EncPacketBody {
                 ref public_key_x,
                 ref public_key_y,
             } => {
-                Self::encode_hex_part(b, &public_key_x[..]);
-                Self::encode_hex_part(b, &public_key_y[..]);
+                Self::encode_part(b, &public_key_x[..]);
+                Self::encode_part(b, &public_key_y[..]);
             }
             Self::Auth { ref authenticator } => {
-                Self::encode_hex_part(b, &authenticator[..]);
+                Self::encode_part(b, &authenticator[..]);
             }
         }
     }
@@ -604,19 +647,22 @@ impl EncPacketKind {
 
 /// A `PING` packet.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PingPacket<'a> {
+pub struct PingPacket {
     sess_id: u16,
     ping_id: u16,
-    data: &'a str,
+    data: StringBytes,
 }
 
-impl<'a> PingPacket<'a> {
+impl PingPacket {
     /// Constructs a new `PING` packet.
-    pub fn new(sess_id: u16, ping_id: u16, data: &'a str) -> Self {
+    pub fn new<S>(sess_id: u16, ping_id: u16, data: S) -> Self
+    where
+        S: Into<StringBytes>,
+    {
         Self {
             sess_id,
             ping_id,
-            data,
+            data: data.into(),
         }
     }
 
@@ -631,12 +677,12 @@ impl<'a> PingPacket<'a> {
     }
 
     /// Retrives the ping data.
-    pub fn data(&self) -> &'a str {
-        self.data
+    pub fn data(&self) -> &str {
+        self.data.as_ref()
     }
 }
 
-impl<'a> Encode for PingPacket<'a> {
+impl Encode for PingPacket {
     fn encode<B: BufMut>(&self, b: &mut B) {
         b.put_u16(self.sess_id);
         b.put_u16(self.ping_id);
@@ -645,14 +691,14 @@ impl<'a> Encode for PingPacket<'a> {
     }
 }
 
-impl<'a> Decode<'a> for PingPacket<'a> {
-    type Error = PacketDecodeError<'a>;
+impl Decode for PingPacket {
+    type Error = PacketDecodeError;
 
-    fn decode(b: &'a [u8]) -> Result<(&'a [u8], Self), Self::Error> {
-        let (b, sess_id) = parse::be_u16(b)?;
-        let (b, ping_id) = parse::be_u16(b)?;
-        let (b, data) = parse::nt_string(b)?;
-        Ok((b, Self::new(sess_id, ping_id, data)))
+    fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
+        let sess_id = parse::be_u16(b)?;
+        let ping_id = parse::be_u16(b)?;
+        let data = parse::nt_string::<PacketDecodeError>(b)?;
+        Ok(Self::new(sess_id, ping_id, data))
     }
 }
 
@@ -660,16 +706,23 @@ impl<'a> Decode<'a> for PingPacket<'a> {
 mod tests {
     use super::*;
 
-    fn assert_pkt_encdec_works(packet_in: &[u8], valid: Packet<'static>) {
-        let decoded = match Packet::decode(packet_in) {
-            Ok((&[], decoded)) => decoded,
-            Ok((bytes, _)) => panic!("packet was not fully consumed (remaining: {:?})", bytes),
+    fn assert_pkt_encdec_works(packet_in: &'static [u8], valid: Packet) {
+        let mut bytes = Bytes::from_static(packet_in);
+        let decoded = match Packet::decode(&mut bytes) {
+            Ok(decoded) if bytes.len() == 0 => decoded,
+            Ok(_) => panic!("bytes remaining after decode: {:?}", bytes),
             Err(err) => panic!("error decoding packet: {:?}", err),
         };
         let mut packet_out = Vec::new();
         assert_eq!(valid, decoded, "valid = decoded");
         valid.encode(&mut packet_out);
-        assert_eq!(packet_in, &packet_out[..], "packet = encoded")
+        assert_eq!(
+            packet_in,
+            &packet_out[..],
+            "packet = encoded (len {} vs {} )",
+            packet_in.len(),
+            packet_out.len()
+        )
     }
 
     #[test]
@@ -690,7 +743,7 @@ mod tests {
                     sess_id: 1,
                     init_seq: 1,
                     flags: PacketFlags::NAME,
-                    sess_name: "hello",
+                    sess_name: "hello".into(),
                 }),
             },
         );
@@ -714,7 +767,7 @@ mod tests {
                     sess_id: 1,
                     seq: 2,
                     ack: 3,
-                    data: b"hello",
+                    data: Bytes::from_static(b"hello"),
                 }),
             },
         );
@@ -734,7 +787,7 @@ mod tests {
                 id: 1,
                 body: PacketBody::Fin(FinPacket {
                     sess_id: 1,
-                    reason: "dragons",
+                    reason: "dragons".into(),
                 }),
             },
         );
@@ -743,7 +796,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_parse_pkt_enc_init() {
-        fn truncate_arr(mut arr: ArrayVec<[u8; 16]>, new_len: usize) -> ArrayVec<[u8; 16]> {
+        fn truncate_arr(mut arr: Bytes, new_len: usize) -> Bytes {
             arr.truncate(new_len);
             arr
         }
@@ -765,8 +818,8 @@ mod tests {
                     sess_id: 1,
                     cryp_flags: 2,
                     body: EncPacketBody::Init {
-                        public_key_x: truncate_arr(ArrayVec::from([3u8; 16]), 15),
-                        public_key_y: truncate_arr(ArrayVec::from([4u8; 16]), 16),
+                        public_key_x: truncate_arr(Bytes::from(&[3u8; 16][..]), 15),
+                        public_key_y: truncate_arr(Bytes::from(&[4u8; 16][..]), 16),
                     },
                 }),
             },
@@ -792,7 +845,7 @@ mod tests {
                     sess_id: 1,
                     cryp_flags: 2,
                     body: EncPacketBody::Auth {
-                        authenticator: ArrayVec::from([3u8; 16]),
+                        authenticator: Bytes::from(&[3u8; 16][..]),
                     },
                 }),
             },
@@ -815,7 +868,7 @@ mod tests {
                 body: PacketBody::Ping(PingPacket {
                     sess_id: 1,
                     ping_id: 2,
-                    data: "dragons",
+                    data: "dragons".into(),
                 }),
             },
         );

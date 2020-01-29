@@ -1,3 +1,5 @@
+use bytes::BufMut;
+
 const HEX_NIBBLE_INVALID: u8 = 0xFF;
 const HEX_NIBBLE_IGNORED: u8 = 0xFE;
 
@@ -21,6 +23,9 @@ const HEX_TO_DEC_NIBBLE: &[u8] = &[
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, //
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 128
 ];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InvalidHexByte(pub u8, pub u8);
 
 #[derive(Debug, PartialEq)]
 pub enum NibbleResult {
@@ -58,35 +63,25 @@ pub fn encode_nibble(nibble: u8) -> u8 {
     DEC_TO_HEX_NIBBLE[nibble as usize]
 }
 
-pub fn encode_to_slice(src: &[u8], dst: &mut [u8]) {
-    assert!(
-        dst.len() == src.len() * 2,
-        "hex dst.len() must be src.len() * 2"
-    );
-    let mut i = 0;
+pub fn encode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) {
     for byte in src.iter() {
         let (high, low) = split_halves(*byte);
-        dst[i] = encode_nibble(high);
-        dst[i + 1] = encode_nibble(low);
-        i += 2;
+        buf.put_u8(encode_nibble(high));
+        buf.put_u8(encode_nibble(low));
     }
 }
 
-pub fn decode_to_slice(src: &[u8], dst: &mut [u8]) -> Result<(), usize> {
-    assert!(
-        dst.len() == src.len() / 2,
-        "hex dst.len() must be src.len() / 2"
-    );
-    for (i, chunk) in src.chunks_exact(2).enumerate() {
+pub fn decode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) -> Result<(), InvalidHexByte> {
+    for chunk in src.chunks_exact(2) {
         if let [high, low] = chunk {
             match (decode_nibble(*high), decode_nibble(*low)) {
                 (NibbleResult::Value(high), NibbleResult::Value(low)) => {
-                    dst[i] = join_halves(high, low);
+                    buf.put_u8(join_halves(high, low));
                 }
-                _ => return Err(i),
+                _ => return Err(InvalidHexByte(*high, *low)),
             }
         } else {
-            unreachable!();
+            panic!("hex decode src len not even");
         }
     }
     Ok(())
@@ -95,6 +90,7 @@ pub fn decode_to_slice(src: &[u8], dst: &mut [u8]) -> Result<(), usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
 
     const TEST_BYTES_ENCODED: &[u8] = b"deadbeef";
     const TEST_BYTES_DECODED: &[u8] = &[0xDE, 0xAD, 0xBE, 0xEF];
@@ -153,30 +149,16 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_to_slice() {
-        let mut dst = [0u8; 4];
-        decode_to_slice(TEST_BYTES_ENCODED, &mut dst[..]).unwrap();
+    fn test_decode_into_buf() {
+        let mut dst = BytesMut::new();
+        decode_into_buf(&mut dst, TEST_BYTES_ENCODED).unwrap();
         assert_eq!(TEST_BYTES_DECODED, &dst[..]);
     }
 
     #[test]
-    #[should_panic]
-    fn test_decode_to_slice_diff_len() {
-        let mut dst = [0u8; 3];
-        decode_to_slice(TEST_BYTES_ENCODED, &mut dst[..]).unwrap();
-    }
-
-    #[test]
-    fn test_encode_to_slice() {
-        let mut dst = [0u8; 8];
-        encode_to_slice(TEST_BYTES_DECODED, &mut dst[..]);
+    fn test_encode_into_buf() {
+        let mut dst = BytesMut::new();
+        encode_into_buf(&mut dst, TEST_BYTES_DECODED);
         assert_eq!(TEST_BYTES_ENCODED, &dst[..]);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_encode_to_slice_diff_len() {
-        let mut dst = [0u8; 7];
-        encode_to_slice(TEST_BYTES_DECODED, &mut dst[..]);
     }
 }

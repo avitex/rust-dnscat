@@ -5,9 +5,11 @@ authors = ["avitex <theavitex@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-nom = "~5.1"
 bytes = "~0.5"
 bitflags = "~1.2"
-arrayvec = "~0.5"
+tokio = "~0.2"
 futures = "~0.3"
 futures-timer = "~2.0"
+trust-dns-proto = "~0.19"
+trust-dns-client = "~0.19"
+rand = "~0.7"
