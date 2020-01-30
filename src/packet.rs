@@ -5,9 +5,8 @@ use std::str::{self, Utf8Error};
 use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::encdec::{Decode, Encode};
 use crate::util::parse::{self, InvalidHexByte, Needed, NoNullTermError};
-use crate::util::{hex, StringBytes};
+use crate::util::{hex, StringBytes, Decode, Encode};
 
 pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 

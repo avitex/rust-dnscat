@@ -1,15 +1,17 @@
-pub mod encdec;
+pub mod conn;
 /// Packet support for establishing a connection in a transport.
 pub mod packet;
 pub mod transport;
 
 mod util {
-    mod string_bytes;
+    mod sbytes;
+    mod encdec;
 
     pub mod hex;
-    pub mod parse;
+    pub mod parse;    
 
-    pub use self::string_bytes::StringBytes;
+    pub use self::sbytes::StringBytes;
+    pub use self::encdec::{Encode, Decode};
 }
 
 mod private {

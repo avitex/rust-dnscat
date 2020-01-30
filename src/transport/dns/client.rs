@@ -16,9 +16,9 @@ use trust_dns_proto::{
     xfer::{DnsHandle, DnsRequestOptions},
 };
 
-use crate::transport::ExchangeClient;
+use crate::transport::{ExchangeTransport, Datagram};
 
-const DNS_SOCKET_PORT: u16 = 53;
+use super::{SOCKET_PORT, DnsTransportError};
 
 type ClientInner = AsyncClient<UdpResponse>;
 
@@ -32,7 +32,7 @@ impl DnsClient {
     }
 
     async fn client_for_host(&self, host: IpAddr) -> Result<ClientInner, ProtoError> {
-        let addr = SocketAddr::new(host, DNS_SOCKET_PORT);
+        let addr = SocketAddr::new(host, SOCKET_PORT);
         let stream = UdpClientStream::<UdpSocket>::new(addr);
         let (client, bg) = ClientInner::connect(stream).await?;
         self.rt.spawn(bg);
@@ -40,27 +40,26 @@ impl DnsClient {
     }
 }
 
-impl ExchangeClient for DnsClient {
-    type Error = ProtoError;
-    type Query = (IpAddr, Query);
+impl<CS, SC> ExchangeTransport<CS, SC> for DnsClient
+where
+    CS: Datagram,
+    SC: Datagram,
+{
+    type Error = DnsTransportError;
 
-    type Future = BoxFuture<'static, Result<Bytes, Self::Error>>;
+    type Future = BoxFuture<'static, Result<SC, Self::Error>>;
 
-    fn build(&mut self, buf: &[u8]) -> Result<Option<Self::Query>, Self::Error> {
-        //let record_type = RecordType::A;
-        //let query = Query::query(name, record_type);
-        unimplemented!()
-    }
+    fn exchange(&mut self, datagram: CS) -> Self::Future {
+        // let record_type = RecordType::A;
+        // let query = Query::query(name, record_type);
 
-    fn query(&mut self, query: Self::Query) -> Self::Future {
-        let (host, query) = query;
-        let query_opts = DnsRequestOptions {
-            expects_multiple_responses: true,
-        };
+        // let query_opts = DnsRequestOptions {
+        //     expects_multiple_responses: true,
+        // };
 
-        let fut = self
-            .client_for_host(host)
-            .and_then(|mut c| c.lookup(query, query_opts));
+        // let fut = self
+        //     .client_for_host(host)
+        //     .and_then(|mut c| c.lookup(query, query_opts));
 
         //Box::pin(fut)
         unimplemented!()
