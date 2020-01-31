@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::util::parse::{self, InvalidHexByte, Needed, NoNullTermError};
-use crate::util::{hex, StringBytes, Decode, Encode};
+use crate::util::{hex, Decode, Encode, StringBytes};
 
 pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 
@@ -264,7 +264,9 @@ where
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::PING => PingBody::decode(b).map(Self::Ping),
-            kind if kind.session_framed() => SessionBodyFrame::decode_kind(kind, b).map(Self::Session),
+            kind if kind.session_framed() => {
+                SessionBodyFrame::decode_kind(kind, b).map(Self::Session)
+            }
             kind => Err(PacketDecodeError::UnknownKind(kind.into())),
         }
     }
@@ -546,7 +548,7 @@ impl PacketBody for SynBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::SYN => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into()))
+            other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
 }
@@ -565,11 +567,7 @@ pub struct MsgBody {
 impl MsgBody {
     /// Constructs a new `MSG` packet.
     pub fn new(seq: u16, ack: u16, data: Bytes) -> Self {
-        Self {
-            seq,
-            ack,
-            data,
-        }
+        Self { seq, ack, data }
     }
 
     /// Retrieves the seq number.
@@ -619,7 +617,7 @@ impl PacketBody for MsgBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::MSG => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into()))
+            other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
 }
@@ -674,7 +672,7 @@ impl PacketBody for FinBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::FIN => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into()))
+            other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
 }
@@ -692,10 +690,7 @@ pub struct EncBody {
 impl EncBody {
     /// Constructs a new `ENC` packet.
     pub fn new(cryp_flags: u16, body: EncBodyVariant) -> Self {
-        Self {
-            cryp_flags,
-            body,
-        }
+        Self { cryp_flags, body }
     }
 
     /// Retrives the crypto flags.
@@ -747,7 +742,7 @@ impl PacketBody for EncBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::ENC => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into()))
+            other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
 }
@@ -905,7 +900,7 @@ impl PacketBody for PingBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::PING => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into()))
+            other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
 }
@@ -933,7 +928,11 @@ mod tests {
         )
     }
 
-    fn new_session_packet<B: Into<SupportedSessionBody>>(packet_id: PacketId, session_id: SessionId, body: B) -> Packet {
+    fn new_session_packet<B: Into<SupportedSessionBody>>(
+        packet_id: PacketId,
+        session_id: SessionId,
+        body: B,
+    ) -> Packet {
         let packet_body = SupportedBody::Session(SessionBodyFrame::new(session_id, body.into()));
         Packet::new(packet_id, packet_body)
     }

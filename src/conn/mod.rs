@@ -6,12 +6,15 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::BytesMut;
+use futures::future;
 use futures::io::{self, AsyncRead, AsyncWrite};
 use futures::stream::StreamExt;
-use futures::future;
 use futures_timer::Delay;
 
-use crate::packet::{Packet, LazyPacket, SynBody, PacketFlags, SessionBodyFrame, SupportedBody, SessionBodyBytes, SupportedSessionBody};
+use crate::packet::{
+    LazyPacket, Packet, PacketFlags, SessionBodyBytes, SessionBodyFrame, SupportedBody,
+    SupportedSessionBody, SynBody,
+};
 use crate::transport::ExchangeTransport;
 
 use self::enc::ConnectionEncryption;
@@ -173,15 +176,14 @@ where
         let mut attempt = 1;
         let server_syn = loop {
             // Build our SYN
-            let client_syn =
-                SynBody::new(self.data_seq, packet_flags, self.sess_name.clone());
+            let client_syn = SynBody::new(self.data_seq, packet_flags, self.sess_name.clone());
             // Send our SYN
             self.send_packet(client_syn).await?;
             // Recv server SYN
             match self.recv_packet().await {
                 Ok(server_packet) => match server_packet {
                     SupportedSessionBody::Syn(server_syn) => break server_syn,
-                    body => return Err(ConnectionError::Unexpected(body))
+                    body => return Err(ConnectionError::Unexpected(body)),
                 },
                 Err(ConnectionError::Timeout) => {
                     if attempt == self.recv_max_retry {
@@ -207,9 +209,7 @@ where
         }
         // Extract the server initial sequence
         self.data_ack = server_syn.initial_sequence();
-        if self.is_encrypted() {
-            
-        }
+        if self.is_encrypted() {}
         // Handshake done!
         Ok(self)
     }

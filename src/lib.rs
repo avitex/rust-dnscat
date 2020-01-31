@@ -4,14 +4,14 @@ pub mod packet;
 pub mod transport;
 
 mod util {
-    mod sbytes;
     mod encdec;
+    mod sbytes;
 
     pub mod hex;
-    pub mod parse;    
+    pub mod parse;
 
+    pub use self::encdec::{Decode, Encode};
     pub use self::sbytes::StringBytes;
-    pub use self::encdec::{Encode, Decode};
 }
 
 mod private {
