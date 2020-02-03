@@ -5,7 +5,7 @@ pub mod dns;
 use std::future::Future;
 
 pub use self::split::*;
-pub use crate::util::{Decode, Encode};
+pub use crate::util::{hex, Decode, Encode};
 
 pub trait Datagram: Encode + Decode + Send + 'static {}
 
@@ -13,10 +13,11 @@ impl<T> Datagram for T where T: Encode + Decode + Send + 'static {}
 
 #[derive(Debug)]
 pub enum DatagramError<D> {
-    Decode(D),
     Overflow,
     Underflow,
     Malformed,
+    Decode(D),
+    Hex(hex::DecodeError),
     Split(SplitDatagramError),
 }
 

@@ -8,10 +8,11 @@ use trust_dns_proto::error::ProtoError;
 
 use crate::transport::DatagramError;
 
+#[derive(Debug)]
 pub enum DnsTransportError<D> {
     Proto(ProtoError),
     Datagram(DatagramError<D>),
-    Endpoint(DnsEndpointError),
+    //Endpoint(DnsEndpointError),
 }
 
 impl<D> From<ProtoError> for DnsTransportError<D> {
@@ -26,8 +27,8 @@ impl<D> From<DatagramError<D>> for DnsTransportError<D> {
     }
 }
 
-impl<D> From<DnsEndpointError> for DnsTransportError<D> {
-    fn from(err: DnsEndpointError) -> Self {
-        Self::Endpoint(err)
-    }
-}
+// impl<D> From<DnsEndpointError> for DnsTransportError<D> {
+//     fn from(err: DnsEndpointError) -> Self {
+//         Self::Endpoint(err)
+//     }
+// }

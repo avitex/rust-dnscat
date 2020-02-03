@@ -143,7 +143,7 @@ where
                     this.parse_response(answers, record_type)
                 })
             }
-            Err(err) => Box::pin(future::err(DnsTransportError::Endpoint(err))),
+            Err(err) => Box::pin(future::err(err)),
         }
     }
 }

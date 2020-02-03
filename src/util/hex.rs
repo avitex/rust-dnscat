@@ -1,7 +1,8 @@
 use std::iter;
 
+use arrayvec::ArrayVec;
 use bytes::BufMut;
-use itertools::Itertools;
+use itertools::{self, Itertools};
 
 const HEX_NIBBLE_INVALID: u8 = 0xFF;
 const HEX_NIBBLE_IGNORED: u8 = 0xFE;
@@ -34,10 +35,8 @@ pub enum DecodeError {
 }
 
 pub fn encode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) {
-    for byte in src.iter() {
-        let (high, low) = split_halves(*byte);
-        buf.put_u8(encode_nibble(high));
-        buf.put_u8(encode_nibble(low));
+    for nibble in encode_iter(src.iter().copied()) {
+        buf.put_u8(nibble);
     }
 }
 
@@ -46,16 +45,23 @@ pub fn decode_into_buf<B: BufMut>(
     src: &[u8],
     skip_ignored: bool,
 ) -> Result<(), DecodeError> {
-    for result in decode_hex_iter(src.iter().copied(), skip_ignored) {
+    for result in decode_iter(src.iter().copied(), skip_ignored) {
         buf.put_u8(result?)
     }
     Ok(())
 }
 
-pub fn decode_hex_iter<I>(
-    iter: I,
-    skip_ignored: bool,
-) -> impl Iterator<Item = Result<u8, DecodeError>>
+pub fn encode_iter<I>(iter: I) -> impl Iterator<Item = u8>
+where
+    I: Iterator<Item = u8>,
+{
+    iter.flat_map(|byte| {
+        let (high, low) = split_halves(byte);
+        ArrayVec::from([encode_nibble(high), encode_nibble(low)])
+    })
+}
+
+pub fn decode_iter<I>(iter: I, skip_ignored: bool) -> impl Iterator<Item = Result<u8, DecodeError>>
 where
     I: Iterator<Item = u8>,
 {
