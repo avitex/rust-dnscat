@@ -1,4 +1,7 @@
+use std::iter;
+
 use bytes::BufMut;
+use itertools::Itertools;
 
 const HEX_NIBBLE_INVALID: u8 = 0xFF;
 const HEX_NIBBLE_IGNORED: u8 = 0xFE;
@@ -25,42 +28,9 @@ const HEX_TO_DEC_NIBBLE: &[u8] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InvalidHexByte(pub u8, pub u8);
-
-#[derive(Debug, PartialEq)]
-pub enum NibbleResult {
-    Ignore,
-    Value(u8),
-    Invalid(u8),
-}
-
-#[inline]
-pub fn split_halves(byte: u8) -> (u8, u8) {
-    (byte >> 4, byte & 0x0F)
-}
-
-#[inline]
-pub fn join_halves(high: u8, low: u8) -> u8 {
-    low | (high << 4)
-}
-
-#[inline]
-pub fn decode_nibble(nibble: u8) -> NibbleResult {
-    if nibble > 127 {
-        return NibbleResult::Invalid(nibble);
-    }
-    assert!(nibble <= 127);
-    match HEX_TO_DEC_NIBBLE[nibble as usize] {
-        HEX_NIBBLE_IGNORED => NibbleResult::Ignore,
-        HEX_NIBBLE_INVALID => NibbleResult::Invalid(nibble),
-        value => NibbleResult::Value(value),
-    }
-}
-
-#[inline]
-pub fn encode_nibble(nibble: u8) -> u8 {
-    assert!(nibble <= 0x0F, "nibble greater than 0x0F: {:?}", nibble);
-    DEC_TO_HEX_NIBBLE[nibble as usize]
+pub enum DecodeError {
+    InvalidNibble(u8),
+    IncompleteByte,
 }
 
 pub fn encode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) {
@@ -71,20 +41,78 @@ pub fn encode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) {
     }
 }
 
-pub fn decode_into_buf<B: BufMut>(buf: &mut B, src: &[u8]) -> Result<(), InvalidHexByte> {
-    for chunk in src.chunks_exact(2) {
-        if let [high, low] = chunk {
-            match (decode_nibble(*high), decode_nibble(*low)) {
-                (NibbleResult::Value(high), NibbleResult::Value(low)) => {
-                    buf.put_u8(join_halves(high, low));
-                }
-                _ => return Err(InvalidHexByte(*high, *low)),
-            }
-        } else {
-            panic!("hex decode src len not even");
-        }
+pub fn decode_into_buf<B: BufMut>(
+    buf: &mut B,
+    src: &[u8],
+    skip_ignored: bool,
+) -> Result<(), DecodeError> {
+    for result in decode_hex_iter(src.iter().copied(), skip_ignored) {
+        buf.put_u8(result?)
     }
     Ok(())
+}
+
+pub fn decode_hex_iter<I>(
+    iter: I,
+    skip_ignored: bool,
+) -> impl Iterator<Item = Result<u8, DecodeError>>
+where
+    I: Iterator<Item = u8>,
+{
+    let mut iter = iter
+        .fuse()
+        .map(decode_nibble)
+        .filter_map(move |res| match res {
+            NibbleResult::Ignored(_) if skip_ignored => None,
+            other => Some(other),
+        })
+        .map(|res| match res {
+            NibbleResult::Value(v) => Ok(v),
+            NibbleResult::Ignored(v) => Err(DecodeError::InvalidNibble(v)),
+            NibbleResult::Invalid(v) => Err(DecodeError::InvalidNibble(v)),
+        });
+
+    iter::from_fn(move || {
+        iter.next_tuple()
+            .map(|(hr, lr)| Ok(join_halves(hr?, lr?)))
+            .or_else(|| iter.next().map(|_| Err(DecodeError::IncompleteByte)))
+    })
+}
+
+#[derive(Debug, PartialEq)]
+enum NibbleResult {
+    Value(u8),
+    Invalid(u8),
+    Ignored(u8),
+}
+
+#[inline]
+fn split_halves(byte: u8) -> (u8, u8) {
+    (byte >> 4, byte & 0x0F)
+}
+
+#[inline]
+fn join_halves(high: u8, low: u8) -> u8 {
+    low | (high << 4)
+}
+
+#[inline]
+fn decode_nibble(nibble: u8) -> NibbleResult {
+    if nibble > 127 {
+        return NibbleResult::Invalid(nibble);
+    }
+    assert!(nibble <= 127);
+    match HEX_TO_DEC_NIBBLE[nibble as usize] {
+        HEX_NIBBLE_IGNORED => NibbleResult::Ignored(nibble),
+        HEX_NIBBLE_INVALID => NibbleResult::Invalid(nibble),
+        value => NibbleResult::Value(value),
+    }
+}
+
+#[inline]
+fn encode_nibble(nibble: u8) -> u8 {
+    assert!(nibble <= 0x0F, "nibble greater than 0x0F: {:?}", nibble);
+    DEC_TO_HEX_NIBBLE[nibble as usize]
 }
 
 #[cfg(test)]
@@ -112,6 +140,23 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_iter_basic() {
+        let data = b".Aa.B.100.";
+        // Skip ignored
+        let decode_skip_ignored = decode_hex_iter(data.iter().copied(), true);
+        assert_eq!(
+            decode_skip_ignored.collect::<Vec<_>>(),
+            vec![Ok(0xAA), Ok(0xB1), Ok(0x00)]
+        );
+        // Fail ignored
+        let mut decode_fail_ignored = decode_hex_iter(data.iter().copied(), false);
+        assert_eq!(
+            decode_fail_ignored.next().unwrap(),
+            Err(DecodeError::InvalidNibble(b'.'))
+        );
+    }
+
+    #[test]
     fn test_decode_nibble() {
         // Number
         assert_eq!(decode_nibble(b'0'), NibbleResult::Value(0x0));
@@ -123,7 +168,7 @@ mod tests {
         assert_eq!(decode_nibble(b'A'), NibbleResult::Value(0xA));
         assert_eq!(decode_nibble(b'F'), NibbleResult::Value(0xF));
         // Dot
-        assert_eq!(decode_nibble(b'.'), NibbleResult::Ignore);
+        assert_eq!(decode_nibble(b'.'), NibbleResult::Ignored(b'.'));
         // Invalid
         assert_eq!(decode_nibble(0xFF), NibbleResult::Invalid(0xFF));
     }
@@ -151,7 +196,7 @@ mod tests {
     #[test]
     fn test_decode_into_buf() {
         let mut dst = BytesMut::new();
-        decode_into_buf(&mut dst, TEST_BYTES_ENCODED).unwrap();
+        decode_into_buf(&mut dst, TEST_BYTES_ENCODED, false).unwrap();
         assert_eq!(TEST_BYTES_DECODED, &dst[..]);
     }
 

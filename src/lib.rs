@@ -1,3 +1,5 @@
+//#![warn(missing_docs)]
+
 pub mod conn;
 /// Packet support for establishing a connection in a transport.
 pub mod packet;

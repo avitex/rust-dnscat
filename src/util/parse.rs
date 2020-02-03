@@ -5,8 +5,6 @@ use bytes::{Buf, Bytes, BytesMut};
 
 use crate::util::{hex, StringBytes};
 
-pub use self::hex::InvalidHexByte;
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Needed(pub usize);
 
@@ -60,12 +58,12 @@ where
 pub fn np_hex_string<E>(bytes: &mut Bytes, len: usize) -> Result<Bytes, E>
 where
     E: From<Needed>,
-    E: From<InvalidHexByte>,
+    E: From<hex::DecodeError>,
 {
     let bytes = split_to(bytes, len)?;
     let slice = bytes.split(|x| *x == 0).next().unwrap();
     let mut raw_bytes = BytesMut::with_capacity(len / 2);
-    hex::decode_into_buf(&mut raw_bytes, slice)?;
+    hex::decode_into_buf(&mut raw_bytes, slice, false)?;
     Ok(raw_bytes.freeze())
 }
 

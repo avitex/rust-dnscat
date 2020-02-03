@@ -1,46 +1,32 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
-use futures::future;
+use bytes::BytesMut;
+use futures::future::{self, BoxFuture, FutureExt};
 use tokio::net::UdpSocket;
 use tokio::runtime;
-use trust_dns_client::{
-    client::AsyncClient,
-    op::Query,
-    rr::{Name, RData, Record, RecordType},
-    udp::UdpClientStream,
-};
+use trust_dns_client::client::AsyncClient;
 use trust_dns_proto::{
-    udp::UdpResponse,
+    error::ProtoError,
+    op::Query,
+    rr::{Name, Record, RecordType},
+    udp::{UdpClientStream, UdpResponse},
     xfer::{DnsHandle, DnsRequestOptions},
 };
 
-use crate::transport::{
-    BoxExchangeFuture, Datagram, ExchangeError, ExchangeTransport, SplitDatagram,
-};
+use crate::transport::{Datagram, DatagramError, ExchangeTransport, SplitDatagram};
 
-use super::DnsTransportError;
+use super::{DnsEndpoint, DnsTransportError};
 
 const DEFAULT_LOOKUP_OPTIONS: DnsRequestOptions = DnsRequestOptions {
+    // We don't currently care about mDNS responses.
     expects_multiple_responses: false,
 };
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct DnsRequest {
-    pub name: Name,
-    pub kind: RecordType,
-}
-
-pub trait DnsEndpoint: Send + 'static {
-    fn build(&mut self, tx: &[u8]) -> Option<DnsRequest>;
-}
-
 pub struct DnsClient<H, E> {
     dns_handle: H,
-    encode_buf: BytesMut,
     runtime_handle: runtime::Handle,
-    endpoint: Arc<Mutex<E>>,
+    endpoint: Arc<E>,
 }
 
 impl<H, E> Clone for DnsClient<H, E>
@@ -51,73 +37,7 @@ where
         Self {
             dns_handle: self.dns_handle.clone(),
             runtime_handle: self.runtime_handle.clone(),
-            encode_buf: self.encode_buf.clone(),
             endpoint: self.endpoint.clone(),
-        }
-    }
-}
-
-impl<H, E> DnsClient<H, E>
-where
-    H: DnsHandle,
-    E: DnsEndpoint,
-{
-    pub fn new(dns_handle: H, endpoint: E, runtime_handle: runtime::Handle) -> Self {
-        Self {
-            dns_handle,
-            runtime_handle,
-            encode_buf: BytesMut::new(),
-            endpoint: Arc::new(Mutex::new(endpoint)),
-        }
-    }
-
-    async fn lookup_and_extract(
-        &mut self,
-        request_kind: RecordType,
-        name: Name,
-    ) -> Result<Bytes, DnsTransportError> {
-        // let query = Query::query(name, request_kind);
-        // let response = self
-        //     .dns_handle
-        //     .lookup(query, DEFAULT_LOOKUP_OPTIONS)
-        //     .await?;
-        //let response_kind = response.record_type();
-        // let answers = response.take_answers().into_iter().map(||);
-        // if request_kind != response_kind {
-        //     return Err(DnsTransportError::TypeMismatch);
-        // }
-        // let mut datagram = SplitDatagram::with_capacity(answers.len());
-        let mut bytes = BytesMut::new();
-        Ok(bytes.freeze())
-    }
-
-    fn build_request<D: Datagram>(&mut self, datagram: D) -> Result<DnsRequest, DnsTransportError> {
-        let mut endpoint = self
-            .endpoint
-            .lock()
-            .expect("dns client state lock poisoned");
-        datagram.encode(&mut self.encode_buf);
-        let request_opt = endpoint.build(self.encode_buf.as_ref());
-        self.encode_buf.clear();
-        request_opt.ok_or(DnsTransportError::DatagramOverflow)
-    }
-
-    async fn send_request<D: Datagram>(
-        mut self,
-        request: DnsRequest,
-    ) -> Result<D, ExchangeError<D::Error, DnsTransportError>> {
-        let DnsRequest { kind, name } = request;
-        let mut bytes = self
-            .lookup_and_extract(kind, name)
-            .await
-            .map_err(ExchangeError::Transport)?;
-        let datagram = D::decode(&mut bytes).map_err(ExchangeError::Datagram)?;
-        if bytes.is_empty() {
-            Ok(datagram)
-        } else {
-            Err(ExchangeError::Transport(
-                DnsTransportError::DatagramUnderflow,
-            ))
         }
     }
 }
@@ -128,9 +48,9 @@ where
 {
     pub async fn connect(
         addr: SocketAddr,
-        endpoint: E,
+        endpoint: Arc<E>,
         rt: runtime::Handle,
-    ) -> Result<Self, DnsTransportError> {
+    ) -> Result<Self, ProtoError> {
         let stream = UdpClientStream::<UdpSocket>::new(addr);
         let (client, bg) = AsyncClient::connect(stream).await?;
         rt.spawn(bg);
@@ -138,22 +58,92 @@ where
     }
 }
 
+impl<H, E> DnsClient<H, E>
+where
+    H: DnsHandle,
+    E: DnsEndpoint,
+{
+    pub fn new(dns_handle: H, endpoint: Arc<E>, runtime_handle: runtime::Handle) -> Self {
+        Self {
+            endpoint,
+            dns_handle,
+            runtime_handle,
+        }
+    }
+
+    async fn lookup(
+        &mut self,
+        name: Name,
+        record_type: RecordType,
+    ) -> Result<Vec<Record>, ProtoError> {
+        let query = Query::query(name, record_type);
+        let fut = self.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
+        let answers = self
+            .runtime_handle
+            .spawn(fut)
+            .map(|res| res.expect("failed to execute dns lookup future"))
+            .await?
+            .take_answers();
+        Ok(answers)
+    }
+
+    fn parse_response<D: Datagram>(
+        &mut self,
+        answers: Vec<Record>,
+        record_type: RecordType,
+    ) -> Result<D, DnsTransportError<D::Error>> {
+        // We will filter for the record type we requested, and
+        // drop record types we don't care about silently later.
+        let answers = answers.into_iter().map(|r| r.unwrap_rdata());
+        // Create the buffer we will put the data in.
+        let mut bytes = BytesMut::new();
+        // Parse the record data depending on the record type.
+        match record_type {
+            RecordType::A => {
+                let addrs = answers.filter_map(|d| d.into_a().ok());
+                SplitDatagram::write_iter_into(addrs, &mut bytes).map_err(DatagramError::from)?;
+            }
+            RecordType::AAAA => {
+                let addrs = answers.filter_map(|d| d.into_aaaa().ok());
+                SplitDatagram::write_iter_into(addrs, &mut bytes).map_err(DatagramError::from)?;
+            }
+            RecordType::CNAME => unimplemented!(),
+            RecordType::MX => unimplemented!(),
+            RecordType::TXT => unimplemented!(),
+            other => panic!("unsupported record type: {:?}", other),
+        }
+        let mut bytes = bytes.freeze();
+        let datagram = D::decode(&mut bytes).map_err(DatagramError::Decode)?;
+        if bytes.is_empty() {
+            Ok(datagram)
+        } else {
+            Err(DatagramError::Underflow.into())
+        }
+    }
+}
+
 impl<H, E, CS, SC> ExchangeTransport<CS, SC> for DnsClient<H, E>
 where
     H: DnsHandle,
     E: DnsEndpoint,
-    CS: Datagram,
+    CS: Datagram<Error = SC::Error>,
     SC: Datagram,
     SC::Error: Send,
 {
-    type Error = DnsTransportError;
+    type Error = DnsTransportError<SC::Error>;
 
-    type Future = BoxExchangeFuture<SC, Self::Error>;
+    type Future = BoxFuture<'static, Result<SC, Self::Error>>;
 
     fn exchange(&mut self, datagram: CS) -> Self::Future {
-        match self.build_request(datagram) {
-            Ok(request) => Box::pin(self.clone().send_request(request)),
-            Err(err) => Box::pin(future::err(ExchangeError::Transport(err))),
+        match self.endpoint.build(datagram) {
+            Ok((name, record_type)) => {
+                let mut this = self.clone();
+                Box::pin(async move {
+                    let answers = this.lookup(name, record_type).await?;
+                    this.parse_response(answers, record_type)
+                })
+            }
+            Err(err) => Box::pin(future::err(DnsTransportError::Datagram(err))),
         }
     }
 }

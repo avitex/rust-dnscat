@@ -1,11 +1,9 @@
-#![warn(missing_docs)]
-
 use std::str::{self, Utf8Error};
 
 use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::util::parse::{self, InvalidHexByte, Needed, NoNullTermError};
+use crate::util::parse::{self, Needed, NoNullTermError};
 use crate::util::{hex, Decode, Encode, StringBytes};
 
 pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
@@ -193,6 +191,8 @@ impl Default for PacketFlags {
 pub enum PacketDecodeError {
     /// No null term error.
     NoNullTerm,
+    /// Hex decode error.
+    Hex(hex::DecodeError),
     /// UTF8 decode error.
     Utf8(Utf8Error),
     /// Unknown packet kind.
@@ -200,9 +200,7 @@ pub enum PacketDecodeError {
     /// Unknown encryption packet kind.
     UnknownEncKind(u8),
     /// Incomplete input error.
-    Incomplete(usize),
-    /// Nibble pair error.
-    InvalidHexByte(u8, u8),
+    Incomplete(Needed),
 }
 
 impl From<NoNullTermError> for PacketDecodeError {
@@ -217,15 +215,15 @@ impl From<Utf8Error> for PacketDecodeError {
     }
 }
 
-impl From<InvalidHexByte> for PacketDecodeError {
-    fn from(err: InvalidHexByte) -> Self {
-        Self::InvalidHexByte(err.0, err.1)
+impl From<hex::DecodeError> for PacketDecodeError {
+    fn from(err: hex::DecodeError) -> Self {
+        Self::Hex(err)
     }
 }
 
 impl From<Needed> for PacketDecodeError {
     fn from(needed: Needed) -> Self {
-        Self::Incomplete(needed.0)
+        Self::Incomplete(needed)
     }
 }
 

@@ -10,3 +10,10 @@ Documentation hosted on [docs.rs](https://docs.rs/dnscat2).
 ```toml
 dnscat2 = "0.1.0"
 ```
+
+## TODO
+
+- [ ] `Connection`
+- [ ] `DnsEndpoint`
+- [ ] `ConnectionEncryption`
+- [ ] `CNAME`, `MX` and `TXT` support.
