@@ -1,5 +1,6 @@
 mod client;
 mod endpoint;
+mod name;
 
 pub use self::client::*;
 pub use self::endpoint::*;
@@ -12,7 +13,7 @@ use crate::transport::DatagramError;
 pub enum DnsTransportError<D> {
     Proto(ProtoError),
     Datagram(DatagramError<D>),
-    //Endpoint(DnsEndpointError),
+    Endpoint(DnsEndpointError),
 }
 
 impl<D> From<ProtoError> for DnsTransportError<D> {
@@ -27,8 +28,8 @@ impl<D> From<DatagramError<D>> for DnsTransportError<D> {
     }
 }
 
-// impl<D> From<DnsEndpointError> for DnsTransportError<D> {
-//     fn from(err: DnsEndpointError) -> Self {
-//         Self::Endpoint(err)
-//     }
-// }
+impl<D> From<DnsEndpointError> for DnsTransportError<D> {
+    fn from(err: DnsEndpointError) -> Self {
+        Self::Endpoint(err)
+    }
+}

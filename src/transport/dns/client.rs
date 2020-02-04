@@ -135,7 +135,9 @@ where
     type Future = BoxFuture<'static, Result<SC, Self::Error>>;
 
     fn exchange(&mut self, datagram: CS) -> Self::Future {
-        match self.endpoint.build(datagram) {
+        let mut request_data = BytesMut::new();
+        datagram.encode(&mut request_data);
+        match self.endpoint.build_request(request_data.freeze()) {
             Ok((name, record_type)) => {
                 let mut this = self.clone();
                 Box::pin(async move {
@@ -143,7 +145,7 @@ where
                     this.parse_response(answers, record_type)
                 })
             }
-            Err(err) => Box::pin(future::err(err)),
+            Err(err) => Box::pin(future::err(DnsTransportError::Endpoint(err))),
         }
     }
 }

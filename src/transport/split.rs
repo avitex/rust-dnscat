@@ -87,9 +87,9 @@ where
     /// Panics if the data length exceeds `max_data_len`.
     pub fn from_data(data: &[u8], block_size: usize) -> Self {
         // Assert the length of data does not exceed the datagram limit
-        assert!(data.len() <= Self::max_data_len(), "datagram data too long");
+        assert!(data.len() <= Self::max_data_len(), "data length valid");
         // Validate block size.
-        assert!(block_size > HEAD_HEADER_LEN, "block size too small");
+        assert!(block_size > HEAD_HEADER_LEN, "block size valid");
         // Calculate block data sizes.
         let head_data_size = block_size - HEAD_HEADER_LEN;
         let tail_data_size = block_size - TAIL_HEADER_LEN;

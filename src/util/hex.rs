@@ -117,7 +117,7 @@ fn decode_nibble(nibble: u8) -> NibbleResult {
 
 #[inline]
 fn encode_nibble(nibble: u8) -> u8 {
-    assert!(nibble <= 0x0F, "nibble greater than 0x0F: {:?}", nibble);
+    assert!(nibble <= 0x0F, "valid nibble range");
     DEC_TO_HEX_NIBBLE[nibble as usize]
 }
 
@@ -149,13 +149,13 @@ mod tests {
     fn test_decode_iter_basic() {
         let data = b".Aa.B.100.";
         // Skip ignored
-        let decode_skip_ignored = decode_hex_iter(data.iter().copied(), true);
+        let decode_skip_ignored = decode_iter(data.iter().copied(), true);
         assert_eq!(
             decode_skip_ignored.collect::<Vec<_>>(),
             vec![Ok(0xAA), Ok(0xB1), Ok(0x00)]
         );
         // Fail ignored
-        let mut decode_fail_ignored = decode_hex_iter(data.iter().copied(), false);
+        let mut decode_fail_ignored = decode_iter(data.iter().copied(), false);
         assert_eq!(
             decode_fail_ignored.next().unwrap(),
             Err(DecodeError::InvalidNibble(b'.'))
