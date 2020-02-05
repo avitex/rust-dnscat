@@ -13,8 +13,8 @@ use futures::stream::StreamExt;
 use futures_timer::Delay;
 
 use crate::packet::{
-    LazyPacket, Packet, PacketBody, PacketFlags, SessionBodyBytes, SessionBodyFrame, SupportedBody,
-    SupportedSessionBody, SynBody,
+    LazyPacket, MsgBody, Packet, PacketBody, PacketDecodeError, PacketFlags, SessionBodyBytes,
+    SessionBodyFrame, SupportedBody, SupportedSessionBody, SynBody,
 };
 use crate::transport::{Decode, Encode, ExchangeTransport};
 
@@ -141,6 +141,7 @@ pub enum ConnectionError<E> {
     Timeout,
     EncryptionMismatch,
     Transport(E),
+    PacketDecode(PacketDecodeError),
     Unexpected(SupportedSessionBody),
 }
 
@@ -217,7 +218,7 @@ where
         // Extract if the server indicates this is a command session.
         self.command = server_syn.flags().contains(PacketFlags::COMMAND);
         // Check the encrypted flags match.
-        if self.is_encrypted() == server_syn.flags().contains(PacketFlags::ENCRYPTED) {
+        if self.is_encrypted() != server_syn.flags().contains(PacketFlags::ENCRYPTED) {
             return Err(ConnectionError::EncryptionMismatch);
         }
         // Extract the server initial sequence
@@ -225,6 +226,10 @@ where
         if self.is_encrypted() {}
         // Handshake done!
         Ok(self)
+    }
+
+    async fn send_data(&mut self, data: &[u8]) -> Result<(), ConnectionError<T::Error>> {
+        unimplemented!()
     }
 
     async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error>>
@@ -253,11 +258,35 @@ where
     }
 
     async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError<T::Error>> {
-        unimplemented!()
-        // match future::select(Delay::new(self.recv_timeout), self.transport.next()).await {
-        //     future::Either::Left(((), _)) => Err(ConnectionError::Timeout),
-        //     future::Either::Right((packet_opt, _)) => packet_opt.ok_or(ConnectionError::Closed),
-        // }
+        let session_frame = loop {
+            let session_frame_opt = loop {
+                if let Some(packet) = self.recv_buffer.pop_front() {
+                    if packet.kind().is_session_framed() {
+                        break packet.into_body().into_session_frame();
+                    }
+                } else {
+                    break None;
+                }
+            };
+            if let Some(session_frame) = session_frame_opt {
+                break session_frame;
+            } else {
+                self.send_data(&[]).await?;
+            }
+        };
+        if self.sess_id != session_frame.session_id() {
+            unimplemented!()
+        }
+        let session_body = session_frame.into_body();
+        let packet_kind = session_body.packet_kind();
+        let mut session_body_bytes = session_body.into_bytes();
+        let mut session_body_bytes = if let Some(ref mut encryption) = self.encryption {
+            encryption.decrypt(&mut session_body_bytes)
+        } else {
+            session_body_bytes
+        };
+        SupportedSessionBody::decode_kind(packet_kind, &mut session_body_bytes)
+            .map_err(ConnectionError::PacketDecode)
     }
 }
 

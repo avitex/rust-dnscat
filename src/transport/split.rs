@@ -527,10 +527,7 @@ mod tests {
 
     #[test]
     fn test_split_datagram_empty() {
-        assert_eq!(
-            parse_blocks(vec![]),
-            Err(SplitDatagramError::Empty)
-        );
+        assert_eq!(parse_blocks(vec![]), Err(SplitDatagramError::Empty));
     }
 
     #[test]

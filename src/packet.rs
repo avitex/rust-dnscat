@@ -106,7 +106,7 @@ pub enum PacketKind {
 }
 
 impl PacketKind {
-    pub fn session_framed(self) -> bool {
+    pub fn is_session_framed(self) -> bool {
         match self {
             Self::SYN | Self::MSG | Self::FIN | Self::ENC => true,
             Self::PING | Self::Other(_) => false,
@@ -233,6 +233,15 @@ pub enum SupportedBody<T> {
     Session(SessionBodyFrame<T>),
 }
 
+impl<T> SupportedBody<T> {
+    pub fn into_session_frame(self) -> Option<SessionBodyFrame<T>> {
+        match self {
+            Self::Session(frame) => Some(frame),
+            _ => None,
+        }
+    }
+}
+
 impl<T> Encode for SupportedBody<T>
 where
     T: PacketBody,
@@ -259,7 +268,7 @@ where
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::PING => PingBody::decode(b).map(Self::Ping),
-            kind if kind.session_framed() => {
+            kind if kind.is_session_framed() => {
                 SessionBodyFrame::decode_kind(kind, b).map(Self::Session)
             }
             kind => Err(PacketDecodeError::UnknownKind(kind.into())),
@@ -288,6 +297,10 @@ where
 
     pub fn session_id(&self) -> SessionId {
         self.id
+    }
+
+    pub fn into_body(self) -> T {
+        self.body
     }
 }
 
@@ -389,6 +402,10 @@ pub struct SessionBodyBytes {
 impl SessionBodyBytes {
     pub fn new(kind: PacketKind, body: Bytes) -> Self {
         Self { kind, body }
+    }
+
+    pub fn into_bytes(self) -> Bytes {
+        self.body
     }
 
     fn from_packet_body<T: PacketBody>(body: T) -> Self {
