@@ -290,9 +290,6 @@ mod tests {
             labeller
                 .label(data, data.len() as u8 + (LABEL_COST * 10))
                 .unwrap()
-                .inspect(|v| {
-                    dbg!(v.len());
-                })
                 .collect_vec(),
             vec![&data[..58], &data[58..82], &data[82..113], &data[113..128]],
         );
