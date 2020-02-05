@@ -4,18 +4,19 @@ use std::borrow::Cow;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use std::collections::VecDeque;
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use futures::future;
 use futures::io::{self, AsyncRead, AsyncWrite};
 use futures::stream::StreamExt;
 use futures_timer::Delay;
 
 use crate::packet::{
-    LazyPacket, Packet, PacketFlags, SessionBodyBytes, SessionBodyFrame, SupportedBody,
+    LazyPacket, Packet, PacketFlags, SessionBodyBytes, SessionBodyFrame, PacketBody, SupportedBody,
     SupportedSessionBody, SynBody,
 };
-use crate::transport::ExchangeTransport;
+use crate::transport::{ExchangeTransport, Decode, Encode};
 
 use self::enc::ConnectionEncryption;
 
@@ -68,7 +69,7 @@ impl ConnectionBuilder {
         self,
         transport: T,
         encryption: E,
-    ) -> Result<Connection<T, E>, ConnectionError>
+    ) -> Result<Connection<T, E>, ConnectionError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         E: ConnectionEncryption,
@@ -76,7 +77,7 @@ impl ConnectionBuilder {
         self.generic_connect(transport, Some(encryption)).await
     }
 
-    pub async fn connect_insecure<T>(self, transport: T) -> Result<Connection<T>, ConnectionError>
+    pub async fn connect_insecure<T>(self, transport: T) -> Result<Connection<T>, ConnectionError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
     {
@@ -87,7 +88,7 @@ impl ConnectionBuilder {
         self,
         transport: T,
         encryption: Option<E>,
-    ) -> Result<Connection<T, E>, ConnectionError>
+    ) -> Result<Connection<T, E>, ConnectionError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         E: ConnectionEncryption,
@@ -109,6 +110,8 @@ impl ConnectionBuilder {
             data_seq,
             command,
             encryption,
+            send_buffer: BytesMut::new(),
+            recv_buffer: VecDeque::new(),
             recv_timeout: self.recv_timeout,
             recv_max_retry: self.recv_max_retry,
         };
@@ -130,10 +133,11 @@ impl Default for ConnectionBuilder {
 }
 
 #[derive(Debug)]
-pub enum ConnectionError {
+pub enum ConnectionError<E> {
     Closed,
     Timeout,
     EncryptionMismatch,
+    Transport(E),
     Unexpected(SupportedSessionBody),
 }
 
@@ -149,6 +153,8 @@ where
     command: bool,
     transport: T,
     encryption: Option<E>,
+    send_buffer: BytesMut,
+    recv_buffer: VecDeque<LazyPacket>,
     recv_timeout: Duration,
     recv_max_retry: usize,
 }
@@ -166,7 +172,7 @@ where
         self.encryption.is_some()
     }
 
-    async fn handshake(mut self, prefer_server_name: bool) -> Result<Self, ConnectionError> {
+    async fn handshake(mut self, prefer_server_name: bool) -> Result<Self, ConnectionError<T::Error>> {
         let mut packet_flags = PacketFlags::default();
         if self.is_command() {
             packet_flags.insert(PacketFlags::COMMAND);
@@ -215,18 +221,29 @@ where
         Ok(self)
     }
 
-    async fn send_packet<B>(&self, body: B) -> Result<(), ConnectionError>
+    async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error>>
     where
         B: Into<SupportedSessionBody>,
     {
-        unimplemented!()
-        // let packet_id = rand::random();
-        // let packet_body = SupportedBody::Session(SessionBodyFrame::new(self.sess_id, body.into()));
-        // let packet = Packet::new(packet_id, packet_body);
-        // Ok(())
+        
+        let packet_id = rand::random();
+        let session_body = body.into();
+        let packet_kind = session_body.packet_kind();
+        session_body.encode(&mut self.send_buffer);
+        let session_body_bytes = if let Some(ref mut encryption) = self.encryption {
+            encryption.encrypt(&mut self.send_buffer)
+        } else {
+            self.send_buffer.to_bytes()
+        };
+        let session_body = SessionBodyBytes::new(packet_kind, session_body_bytes);
+        let packet_body = SupportedBody::Session(SessionBodyFrame::new(self.sess_id, session_body));
+        let packet = Packet::new(packet_id, packet_body);
+        let response = self.transport.exchange(packet).await.map_err(ConnectionError::Transport)?;
+        self.recv_buffer.push_back(response);
+        Ok(())
     }
 
-    async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError> {
+    async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError<T::Error>> {
         unimplemented!()
         // match future::select(Delay::new(self.recv_timeout), self.transport.next()).await {
         //     future::Either::Left(((), _)) => Err(ConnectionError::Timeout),

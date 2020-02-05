@@ -24,10 +24,10 @@ where
     T: PacketBody,
 {
     /// Constructs a new packet given a packet ID and body.
-    pub fn new<B: Into<T>>(id: PacketId, body: B) -> Self {
+    pub fn new(id: PacketId, body: T) -> Self {
         Self {
             id,
-            body: body.into(),
+            body,
         }
     }
 
