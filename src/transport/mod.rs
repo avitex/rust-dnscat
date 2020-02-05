@@ -13,11 +13,8 @@ impl<T> Datagram for T where T: Encode + Decode + Send + 'static {}
 
 #[derive(Debug)]
 pub enum DatagramError<D> {
-    Overflow,
-    Underflow,
-    Malformed,
     Decode(D),
-    Hex(hex::DecodeError),
+    Underflow,
     Split(SplitDatagramError),
 }
 
