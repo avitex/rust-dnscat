@@ -1,7 +1,7 @@
 use std::{cmp, iter};
 
 use bytes::{Bytes, BytesMut};
-use rand::{rngs::ThreadRng, Rng};
+use rand::{rngs::OsRng, Rng};
 use trust_dns_proto::{error::ProtoError, rr::Name};
 
 use crate::util::hex;
@@ -93,6 +93,11 @@ impl NameEncoder {
         Ok(this)
     }
 
+    /// Returns the max length of data that can be encoded.
+    pub fn max_data(&self) -> u8 {
+        self.labeller.max_data_for_budget(self.budget)
+    }
+
     /// Returns the budget available to encode data.
     pub fn budget(&self) -> u8 {
         self.budget
@@ -121,8 +126,9 @@ impl NameEncoder {
             Some(labels) => labels,
             None => return Err(NameEncoderError::DataTooLarge),
         };
-        let const_labels = self.constant().iter();
-        let result = if self.constant().is_fqdn() {
+        let constant = self.constant.as_ref();
+        let const_labels = constant.iter();
+        let result = if constant.is_fqdn() {
             Name::from_labels(labels.chain(const_labels))
         } else {
             Name::from_labels(const_labels.chain(labels))
@@ -131,7 +137,7 @@ impl NameEncoder {
     }
 
     /// Decode hex data from a FQDN.
-    pub fn decode_hex(&mut self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
+    pub fn decode_hex(&self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
         let bytes = self.decode(encoded_name)?;
         let mut hex_bytes = BytesMut::with_capacity(bytes.len());
         hex::decode_into_buf(&mut hex_bytes, bytes.as_ref(), true)
@@ -140,7 +146,7 @@ impl NameEncoder {
     }
 
     /// Decode data from a FQDN.
-    pub fn decode(&mut self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
+    pub fn decode(&self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
         let const_len = self.constant_len();
         let data_len = encoded_name.len().saturating_sub(const_len);
         let const_label_num = self.constant().num_labels() as usize;
@@ -173,7 +179,7 @@ impl NameEncoder {
 }
 
 #[derive(Debug, Clone)]
-pub struct Labeller<R: Rng = ThreadRng> {
+pub struct Labeller<R: Rng = OsRng> {
     random: Option<R>,
     max_size: u8,
 }
@@ -213,6 +219,12 @@ where
             max_size: LABEL_MAX_SIZE as u8,
             random: Some(source),
         }
+    }
+
+    /// Calculates the max data that can be encoded for a budget.
+    pub fn max_data_for_budget(&self, budget: u8) -> u8 {
+        let label_size = self.max_size + LABEL_COST as u8;
+        (budget / label_size) + (budget % label_size)
     }
 
     /// Splits the bytes into a label iter, given a total data budget.
@@ -419,12 +431,11 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_dns_endpoint() {
-        let mut buf = BytesMut::new();
-        let domain_name = Name::from_ascii("example.com").unwrap();
-        let encoded_name = Name::from_ascii("dead.beef.example.com").unwrap();
-        let data = decode_name__.unwrap();
-        assert_eq!(buf, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
-        endpoint.build(datagram)
+    fn test_name_encoder_decode() {
+        let domain_name = Name::from_ascii("example.com.").unwrap();
+        let encoded_name = Name::from_ascii("dead.beef.example.com.").unwrap();
+        let name_encoder = NameEncoder::new(domain_name, Labeller::default()).unwrap();
+        let data = name_encoder.decode_hex(&encoded_name).unwrap();
+        assert_eq!(data, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
     }
 }

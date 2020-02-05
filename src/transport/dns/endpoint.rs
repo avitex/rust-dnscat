@@ -1,12 +1,12 @@
-use bytes::{BufMut, Bytes, BytesMut};
-use itertools::Itertools;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use bytes::Bytes;
 use trust_dns_proto::{
     error::ProtoError,
     rr::{Name, RecordType},
 };
 
-use super::DnsTransportError;
-use crate::util::hex;
+use super::{NameEncoder, Labeller, NameEncoderError};
 
 pub type DnsEndpointRequest = (Name, RecordType);
 
@@ -35,84 +35,79 @@ pub trait DnsEndpoint: Send + Sync + 'static {
 
 #[derive(Debug)]
 pub enum DnsEndpointError {
-    InvalidRoot,
     Proto(ProtoError),
     Custom(&'static str),
+    Name(NameEncoderError),
 }
 
-pub struct BasicDnsEndpoint {
-    root: Name,
-    label_chunk_size: usize,
-}
-
-impl BasicDnsEndpoint {
-    pub fn new(root: Name) -> Self {
-        Self {
-            root,
-            label_chunk_size: 63,
-        }
+impl From<NameEncoderError> for DnsEndpointError {
+    fn from(err: NameEncoderError) -> Self {
+        Self::Name(err)
     }
 }
 
-// impl DnsEndpoint for BasicDnsEndpoint {
-//     fn parse<D>(&self, name: Name) -> Result<D, DnsTransportError<D::Error>>
-//     where
-//         D: Datagram,
-//     {
-//         let mut datagram_buf = BytesMut::new();
-//         if self.root.zone_of(&name) {
-//             let labels_len = (name.num_labels() - self.root.num_labels()) as usize;
-//             let labels = name.iter().take(labels_len);
-//             parse_hex_labels_into_buf(&mut datagram_buf, labels).map_err(DatagramError::Hex)?;
-//         }
-//         let datagram = D::decode(&mut datagram_buf.freeze()).map_err(DatagramError::Decode)?;
-//         Ok(datagram)
-//     }
+pub struct BasicDnsEndpoint {
+    max_request_size: usize,
+    name_encoder: Arc<Mutex<NameEncoder>>,
+    request_record_type: RecordType,
+}
 
-//     fn build<D>(&self, datagram: D) -> Result<(Name, RecordType), DnsTransportError<D::Error>>
-//     where
-//         D: Datagram,
-//     {
-//         // Encode the datagram into a buffer.
-//         let mut datagram_buf = BytesMut::new();
-//         datagram.encode(&mut datagram_buf);
-//         // Encode the datagram buffer into hex.
-//         let mut hex_buf = BytesMut::new();
-//         hex::encode_into_buf(&mut hex_buf, &datagram_buf[..]);
-//         //
-//         let labels = hex_buf.chunks(self.label_chunk_size);
-//         let name_data = Name::from_labels(labels)?.append_domain(&self.root);
-//         Ok((name_data, RecordType::A))
-//     }
-// }
+impl BasicDnsEndpoint {
+    pub fn new(constant: Name) -> Result<Self, DnsEndpointError> {
+        let name_encoder = NameEncoder::new(constant, Labeller::default())?;
+        Ok(Self::new_with_encoder(name_encoder))
+    }
 
-// pub fn parse_hex_labels_into_buf<'a, I>(
-//     buf: &mut BytesMut,
-//     labels: I,
-// ) -> Result<(), hex::DecodeError>
-// where
-//     I: Iterator<Item = &'a [u8]>,
-// {
-//     let nibble_iter = labels.flatten().copied();
-//     let byte_iter = hex::decode_iter(nibble_iter, true);
-//     for byte_res in byte_iter {
-//         buf.put_u8(byte_res?);
-//     }
-//     Ok(())
-// }
+    pub fn new_with_encoder(name_encoder: NameEncoder) -> Self {
+        let max_request_size = name_encoder.max_data() as usize;
+        let name_encoder = Arc::new(Mutex::new(name_encoder));
+        Self {
+            name_encoder,
+            max_request_size,
+            request_record_type: RecordType::A,
+        }
+    }
+    
+    fn lock_name_encoder(&self) -> MutexGuard<NameEncoder> {
+        self.name_encoder.lock().expect("name encoder lock poisoned")
+    }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+    fn decode_name(&self, name: &Name) -> Result<Bytes, NameEncoderError> {
+        self.lock_name_encoder().decode_hex(name)
+    }
 
-//     #[test]
-//     fn test_basic_dns_endpoint() {
-//         let mut buf = BytesMut::new();
-//         let root_name = Name::from_ascii("example.com").unwrap();
-//         let data_name = Name::from_ascii("dead.beef.example.com").unwrap();
-//         let endpoint = BasicDnsEndpoint::new(root_name);
-//         let datagram = endpoint.parse(data_name).unwrap();
-//         assert_eq!(buf, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
-//         endpoint.build(datagram)
-//     }
-// }
+    fn encode_name(&self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
+        self.lock_name_encoder().encode_hex(bytes)
+    }
+}
+
+impl DnsEndpoint for BasicDnsEndpoint {
+    fn max_request_size(&self) -> usize {
+        self.max_request_size
+    }
+
+    fn build_request(&self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError> {
+        let name_data = self.encode_name(&data[..])?;
+        Ok((name_data, self.request_record_type))
+    }
+
+    fn parse_request(&self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.decode_name(&req.0)?)
+    }
+
+    fn build_mx_response(&self, data: Bytes) -> Result<Name, DnsEndpointError> {
+        Ok(self.encode_name(&data[..])?)
+    }
+
+    fn parse_mx_response(&self, name: Name) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.decode_name(&name)?)
+    }
+
+    fn build_cname_response(&self, data: Bytes) -> Result<Name, DnsEndpointError> {
+        Ok(self.encode_name(&data[..])?)
+    }
+
+    fn parse_cname_response(&self, name: Name) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.decode_name(&name)?)
+    }
+}
