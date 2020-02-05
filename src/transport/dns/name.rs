@@ -1,7 +1,7 @@
 use std::{cmp, iter};
 
 use rand::{rngs::ThreadRng, Rng};
-use trust_dns_proto::rr::Name;
+use trust_dns_proto::{error::ProtoError, rr::Name};
 
 const NAME_MAX_SIZE: usize = 255;
 const LABEL_MAX_SIZE: usize = 63;
@@ -50,6 +50,13 @@ impl From<Name> for AsciiName {
 }
 
 #[derive(Debug, Clone)]
+pub enum NameEncoderError {
+    DataTooLarge,
+    ConstantTooLarge,
+    Proto(ProtoError),
+}
+
+#[derive(Debug, Clone)]
 pub struct NameEncoder {
     budget: u8,
     labeller: Labeller,
@@ -57,27 +64,37 @@ pub struct NameEncoder {
 }
 
 impl NameEncoder {
-    pub fn new<C>(constant: C, labeller: Labeller) -> Self
+    pub fn new<C>(constant: C, labeller: Labeller) -> Result<Self, NameEncoderError>
     where
         C: Into<AsciiName>,
     {
         let constant = constant.into();
-        let budget = 253; // TODO max-size - constant.len();
-        Self {
+        // TODO: check me, and test me more
+        let constant_len = if constant.as_ref().is_fqdn() {
+            constant.len()
+        } else {
+            constant.len() - 1
+        };
+        if constant_len >= NAME_MAX_SIZE {
+            return Err(NameEncoderError::ConstantTooLarge);
+        }
+        let budget = (NAME_MAX_SIZE - constant.len()) as u8;
+        let this = Self {
             constant,
             labeller,
             budget,
-        }
+        };
+        Ok(this)
     }
 
     pub fn budget(&self) -> u8 {
         self.budget
     }
 
-    pub fn encode(&mut self, bytes: &[u8]) -> Option<Name> {
+    pub fn encode(&mut self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
         let labels = match self.labeller.label(bytes, self.budget) {
             Some(labels) => labels,
-            None => return None,
+            None => return Err(NameEncoderError::DataTooLarge),
         };
         let constant_name = self.constant.as_ref();
         let result = if constant_name.is_fqdn() {
@@ -87,7 +104,7 @@ impl NameEncoder {
             let labels = constant_name.iter().chain(labels);
             Name::from_labels(labels)
         };
-        result.ok()
+        result.map_err(NameEncoderError::Proto)
     }
 }
 
@@ -300,23 +317,41 @@ mod tests {
         let data = b"helloworld";
         let domain_name = Name::from_ascii("example.com.").unwrap();
         let encoded_name = Name::from_ascii("hello.world.example.com.").unwrap();
-        let mut name_encoder = NameEncoder::new(domain_name, Labeller::exact(5));
-        assert_eq!(name_encoder.encode(data), Some(encoded_name))
+        let mut name_encoder = NameEncoder::new(domain_name, Labeller::exact(5)).unwrap();
+        assert_eq!(name_encoder.encode(data).unwrap(), encoded_name)
     }
 
-    // #[test]
-    // fn test_expected_max_name() {
-    //     let long_label = vec![b'a'; 63];
-    //     let name = Name::new()
-    //         .append_label(&long_label[..])
-    //         .unwrap()
-    //         .append_label(&long_label[..])
-    //         .unwrap()
-    //         .append_label(&long_label[..])
-    //         .unwrap()
-    //         .append_label(&long_label[..])
-    //         .unwrap()
-    //         .append_label(&long_label[..])
-    //         .unwrap();
-    // }
+    #[test]
+    fn name_encoder_budget_prefix_calc() {
+        let label = vec![b'a'; 63];
+        let name = Name::new()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..label.len() - 2])
+            .unwrap();
+        assert_eq!(name.is_fqdn(), false);
+        let name_encoder = NameEncoder::new(name, Labeller::default()).unwrap();
+        assert_eq!(name_encoder.budget(), 1);
+    }
+
+    #[test]
+    fn name_encoder_budget_suffix_calc() {
+        let label = vec![b'a'; 63];
+        let name = Name::root()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..])
+            .unwrap()
+            .append_label(&label[..label.len() - 2])
+            .unwrap();
+        assert_eq!(name.is_fqdn(), true);
+        let name_encoder = NameEncoder::new(name, Labeller::default()).unwrap();
+        assert_eq!(name_encoder.budget(), 1);
+    }
 }
