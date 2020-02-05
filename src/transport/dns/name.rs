@@ -1,23 +1,26 @@
 use std::{cmp, iter};
 
+use bytes::{Bytes, BytesMut};
 use rand::{rngs::ThreadRng, Rng};
 use trust_dns_proto::{error::ProtoError, rr::Name};
+
+use crate::util::hex;
 
 const NAME_MAX_SIZE: usize = 255;
 const LABEL_MAX_SIZE: usize = 63;
 const LABEL_COST: usize = 1;
 
 /// An immutable wrapper around a `Name` with the guarantee
-/// its internal representation is ASCII.
+/// its internal representation is lowercase ASCII.
 ///
 /// Note, also caches the value of `len()`.
 #[derive(Debug, Clone)]
-pub struct AsciiName {
+pub struct LowerAsciiName {
     name: Name,
     len: usize,
 }
 
-impl AsciiName {
+impl LowerAsciiName {
     pub fn len(&self) -> usize {
         self.len
     }
@@ -28,17 +31,18 @@ impl AsciiName {
 
     fn from_name_unchecked(name: Name) -> Self {
         let len = name.len();
+        let name = name.to_lowercase();
         Self { name, len }
     }
 }
 
-impl AsRef<Name> for AsciiName {
+impl AsRef<Name> for LowerAsciiName {
     fn as_ref(&self) -> &Name {
         &self.name
     }
 }
 
-impl From<Name> for AsciiName {
+impl From<Name> for LowerAsciiName {
     fn from(name: Name) -> Self {
         if name.iter().flatten().all(u8::is_ascii) {
             Self::from_name_unchecked(name)
@@ -52,25 +56,27 @@ impl From<Name> for AsciiName {
 #[derive(Debug, Clone)]
 pub enum NameEncoderError {
     DataTooLarge,
+    ConstantNotFound,
     ConstantTooLarge,
     Proto(ProtoError),
+    Hex(hex::DecodeError),
 }
 
 #[derive(Debug, Clone)]
 pub struct NameEncoder {
     budget: u8,
     labeller: Labeller,
-    constant: AsciiName,
+    constant: LowerAsciiName,
 }
 
 impl NameEncoder {
     /// Creates a new name encoder given a constant name and a labeller.
-    /// 
+    ///
     /// If the constant name is a FQDN, the data will appear as subdomains and if
     /// not the data will appear as the domain name.
     pub fn new<C>(constant: C, labeller: Labeller) -> Result<Self, NameEncoderError>
     where
-        C: Into<AsciiName>,
+        C: Into<LowerAsciiName>,
     {
         let constant = constant.into();
         // We account for the root label cost as Name::len() does not.
@@ -92,21 +98,77 @@ impl NameEncoder {
         self.budget
     }
 
+    /// Returns a reference to the constant name.
+    pub fn constant(&self) -> &Name {
+        self.constant.as_ref()
+    }
+
+    /// Returns the length of the constant name.
+    pub fn constant_len(&self) -> usize {
+        self.constant.len()
+    }
+
+    /// Encode data as hex into into a FQDN.
+    pub fn encode_hex(&mut self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
+        let mut hex_bytes = BytesMut::with_capacity(bytes.len() * 2);
+        hex::encode_into_buf(&mut hex_bytes, bytes);
+        self.encode(hex_bytes.as_ref())
+    }
+
     /// Encodes data into a FQDN.
     pub fn encode(&mut self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
         let labels = match self.labeller.label(bytes, self.budget) {
             Some(labels) => labels,
             None => return Err(NameEncoderError::DataTooLarge),
         };
-        let constant_name = self.constant.as_ref();
-        let result = if constant_name.is_fqdn() {
-            let labels = labels.chain(constant_name.iter());
-            Name::from_labels(labels)
+        let const_labels = self.constant().iter();
+        let result = if self.constant().is_fqdn() {
+            Name::from_labels(labels.chain(const_labels))
         } else {
-            let labels = constant_name.iter().chain(labels);
-            Name::from_labels(labels)
+            Name::from_labels(const_labels.chain(labels))
         };
         result.map_err(NameEncoderError::Proto)
+    }
+
+    /// Decode hex data from a FQDN.
+    pub fn decode_hex(&mut self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
+        let bytes = self.decode(encoded_name)?;
+        let mut hex_bytes = BytesMut::with_capacity(bytes.len());
+        hex::decode_into_buf(&mut hex_bytes, bytes.as_ref(), true)
+            .map_err(NameEncoderError::Hex)?;
+        Ok(hex_bytes.freeze())
+    }
+
+    /// Decode data from a FQDN.
+    pub fn decode(&mut self, encoded_name: &Name) -> Result<Bytes, NameEncoderError> {
+        let const_len = self.constant_len();
+        let data_len = encoded_name.len().saturating_sub(const_len);
+        let const_label_num = self.constant().num_labels() as usize;
+        let data_label_num = (encoded_name.num_labels() as usize).saturating_sub(const_label_num);
+        let mut data = BytesMut::with_capacity(data_len);
+        if self.constant().is_fqdn() {
+            if self.constant().zone_of(encoded_name) {
+                data.extend(encoded_name.iter().take(data_label_num).flatten().copied());
+                return Ok(data.freeze());
+            }
+        } else {
+            let encoded_const_iter = encoded_name
+                .iter()
+                .flatten()
+                .map(u8::to_ascii_lowercase)
+                .take(const_len);
+            if self
+                .constant()
+                .iter()
+                .flatten()
+                .copied()
+                .eq(encoded_const_iter)
+            {
+                data.extend(encoded_name.iter().skip(const_label_num).flatten().copied());
+                return Ok(data.freeze());
+            }
+        }
+        Err(NameEncoderError::ConstantNotFound)
     }
 }
 
@@ -233,7 +295,7 @@ mod tests {
     #[test]
     fn test_ascii_name() {
         let utf8_name: Name = "i❤️.rust".parse().unwrap();
-        let ascii_name = AsciiName::from(utf8_name);
+        let ascii_name = LowerAsciiName::from(utf8_name);
         let ascii_name_labels = ascii_name.as_ref().iter().collect::<Vec<_>>();
         assert_eq!(ascii_name_labels, vec![&b"xn--i-7iq"[..], &b"rust"[..]]);
     }
@@ -327,6 +389,18 @@ mod tests {
     }
 
     #[test]
+    fn name_encoder_hex() {
+        let data = &[1, 2, 3, 4, 5];
+        let domain_name = Name::from_ascii("example.com.").unwrap();
+        let encoded_name_valid = Name::from_ascii("01020.30405.example.com.").unwrap();
+        let mut name_encoder = NameEncoder::new(domain_name, Labeller::exact(5)).unwrap();
+        let encoded_name = name_encoder.encode_hex(data).unwrap();
+        assert_eq!(encoded_name, encoded_name_valid);
+        assert_eq!(encoded_name.len(), 24);
+        assert!(encoded_name.is_fqdn());
+    }
+
+    #[test]
     fn name_encoder_budget_calc() {
         let label = vec![b'a'; 63];
         let name = Name::new()
@@ -342,5 +416,15 @@ mod tests {
         assert_eq!(name.is_fqdn(), false);
         let name_encoder = NameEncoder::new(name, Labeller::default()).unwrap();
         assert_eq!(name_encoder.budget(), 1);
+    }
+
+    #[test]
+    fn test_basic_dns_endpoint() {
+        let mut buf = BytesMut::new();
+        let domain_name = Name::from_ascii("example.com").unwrap();
+        let encoded_name = Name::from_ascii("dead.beef.example.com").unwrap();
+        let data = decode_name__.unwrap();
+        assert_eq!(buf, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
+        endpoint.build(datagram)
     }
 }

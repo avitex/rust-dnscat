@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+use itertools::Itertools;
 use trust_dns_proto::{
     error::ProtoError,
     rr::{Name, RecordType},
@@ -83,27 +84,6 @@ impl BasicDnsEndpoint {
 //         let name_data = Name::from_labels(labels)?.append_domain(&self.root);
 //         Ok((name_data, RecordType::A))
 //     }
-// }
-
-// pub fn build_name_from_bytes(
-//     bytes: Bytes,
-//     root_name: Option<&Name>,
-//     tag_name: Option<&Name>,
-//     chunker: LabelChunker,
-// ) -> Result<Name, DnsEndpointError> {
-//     let hex_iter = hex::encode_iter(bytes.iter().copied());
-//     let labels = chunker.chunk(hex_iter);
-//     let name = Name::from_labels(labels)?;
-//     let name = if let Some(root_name) = root_name {
-//         name.append_domain(root_name)
-//     } else {
-//         name
-//     };
-//     let name = if let Some(tag_name) = tag_name {
-//         tag_name.append_domain(name)
-//     } else {
-//         name
-//     };
 // }
 
 // pub fn parse_hex_labels_into_buf<'a, I>(
