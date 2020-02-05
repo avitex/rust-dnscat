@@ -148,4 +148,8 @@ where
             Err(err) => Box::pin(future::err(DnsTransportError::Endpoint(err))),
         }
     }
+
+    fn max_datagram_size(&self) -> usize {
+        self.endpoint.max_request_size()
+    }
 }

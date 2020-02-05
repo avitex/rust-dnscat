@@ -38,4 +38,6 @@ where
     type Future: Future<Output = Result<SC, Self::Error>> + 'static;
     /// Exchange a client datagram for a server datagram.
     fn exchange(&mut self, datagram: CS) -> Self::Future;
+    /// Returns the max datagram size this transport supports.
+    fn max_datagram_size(&self) -> usize;
 }
