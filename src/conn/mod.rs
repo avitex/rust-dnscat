@@ -129,6 +129,7 @@ impl Default for ConnectionBuilder {
     }
 }
 
+#[derive(Debug)]
 pub enum ConnectionError {
     Closed,
     Timeout,
@@ -261,8 +262,8 @@ where
         unimplemented!()
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        unimplemented!()
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {

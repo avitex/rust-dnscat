@@ -18,3 +18,4 @@ arrayvec = "~0.5"
 
 [dev-dependencies]
 rand_pcg = "0.2.1"
+tokio = { version = "~0.2", features = ["full"] }
