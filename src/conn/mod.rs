@@ -32,12 +32,12 @@ pub struct ConnectionBuilder {
 }
 
 impl ConnectionBuilder {
-    pub fn session_id(&mut self, sess_id: u16) -> &mut Self {
+    pub fn session_id(mut self, sess_id: u16) -> Self {
         self.sess_id = Some(sess_id);
         self
     }
 
-    pub fn session_name<S>(&mut self, sess_name: S) -> &mut Self
+    pub fn session_name<S>(mut self, sess_name: S) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
@@ -45,22 +45,22 @@ impl ConnectionBuilder {
         self
     }
 
-    pub fn initial_sequence(&mut self, init_seq: u16) -> &mut Self {
+    pub fn initial_sequence(mut self, init_seq: u16) -> Self {
         self.init_seq = Some(init_seq);
         self
     }
 
-    pub fn prefer_server_name(&mut self, value: bool) -> &mut Self {
+    pub fn prefer_server_name(mut self, value: bool) -> Self {
         self.prefer_server_name = value;
         self
     }
 
-    pub fn recv_max_retry(&mut self, recv_max_retry: usize) -> &mut Self {
+    pub fn recv_max_retry(mut self, recv_max_retry: usize) -> Self {
         self.recv_max_retry = recv_max_retry;
         self
     }
 
-    pub fn recv_timeout(&mut self, recv_timeout: Duration) -> &mut Self {
+    pub fn recv_timeout(mut self, recv_timeout: Duration) -> Self {
         self.recv_timeout = recv_timeout;
         self
     }

@@ -15,8 +15,10 @@ async fn main() {
     let dns_client = DnsClient::connect(dns_addr, dns_endpoint, rt)
         .await
         .unwrap();
-    let mut builder = ConnectionBuilder::default();
-    builder.session_name("test");
-    builder.connect_insecure(dns_client).await.unwrap();
+    let conn = ConnectionBuilder::default()
+        .session_name("test")
+        .connect_insecure(dns_client)
+        .await
+        .unwrap();
     // TODO
 }
