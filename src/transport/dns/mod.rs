@@ -4,6 +4,7 @@ mod name;
 
 pub use self::client::*;
 pub use self::endpoint::*;
+pub use self::name::*;
 
 use trust_dns_proto::error::ProtoError;
 
