@@ -223,8 +223,9 @@ where
 
     /// Calculates the max data that can be encoded for a budget.
     pub fn max_data_for_budget(&self, budget: u8) -> u8 {
-        let label_size = self.max_size + LABEL_COST as u8;
-        (budget / label_size) + (budget % label_size)
+        let total_label_size = self.max_size + LABEL_COST as u8;
+        let min_labels = Self::u8_rounded_up_div(budget, total_label_size);
+        budget - min_labels
     }
 
     /// Splits the bytes into a label iter, given a total data budget.
@@ -289,7 +290,8 @@ where
     // Integer division, rounding up
     #[inline]
     fn u8_rounded_up_div(num: u8, den: u8) -> u8 {
-        (num + (den - 1)) / den
+        let val = (num as u16 + (den as u16 - 1)) / den as u16;
+        val as u8
     }
 }
 
