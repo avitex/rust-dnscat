@@ -5,7 +5,7 @@ use trust_dns_proto::{error::ProtoError, rr::Name};
 
 const NAME_MAX_SIZE: usize = 255;
 const LABEL_MAX_SIZE: usize = 63;
-const LABEL_COST: u8 = 1;
+const LABEL_COST: usize = 1;
 
 /// An immutable wrapper around a `Name` with the guarantee
 /// its internal representation is ASCII.
@@ -64,21 +64,21 @@ pub struct NameEncoder {
 }
 
 impl NameEncoder {
+    /// Creates a new name encoder given a constant name and a labeller.
+    /// 
+    /// If the constant name is a FQDN, the data will appear as subdomains and if
+    /// not the data will appear as the domain name.
     pub fn new<C>(constant: C, labeller: Labeller) -> Result<Self, NameEncoderError>
     where
         C: Into<AsciiName>,
     {
         let constant = constant.into();
-        // TODO: check me, and test me more
-        let constant_len = if constant.as_ref().is_fqdn() {
-            constant.len()
-        } else {
-            constant.len() - 1
-        };
+        // We account for the root label cost as Name::len() does not.
+        let constant_len = constant.len() + LABEL_COST;
         if constant_len >= NAME_MAX_SIZE {
             return Err(NameEncoderError::ConstantTooLarge);
         }
-        let budget = (NAME_MAX_SIZE - constant.len()) as u8;
+        let budget = (NAME_MAX_SIZE - constant_len) as u8;
         let this = Self {
             constant,
             labeller,
@@ -87,10 +87,12 @@ impl NameEncoder {
         Ok(this)
     }
 
+    /// Returns the budget available to encode data.
     pub fn budget(&self) -> u8 {
         self.budget
     }
 
+    /// Encodes data into a FQDN.
     pub fn encode(&mut self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
         let labels = match self.labeller.label(bytes, self.budget) {
             Some(labels) => labels,
@@ -178,7 +180,7 @@ where
         let min_labels = Self::u8_rounded_up_div(bytes_len, self.max_size);
         // Calculate the max number of labels we have room for and can
         // practically create.
-        let max_labels = cmp::min(bytes_len, spare_budget / LABEL_COST);
+        let max_labels = cmp::min(bytes_len, spare_budget / LABEL_COST as u8);
         // If the min number of labels we can create is greater than the max
         // number of labels, we clearly can't go any further.
         if min_labels > max_labels {
@@ -256,12 +258,12 @@ mod tests {
         let mut labeller = Labeller::exact(5);
         // Budget to have one split
         assert!(labeller
-            .label(data, data.len() as u8 + LABEL_COST)
+            .label(data, (data.len() + LABEL_COST) as u8)
             .is_none());
         // Budget to have two splits
         assert_eq!(
             labeller
-                .label(data, data.len() as u8 + (LABEL_COST * 2))
+                .label(data, (data.len() + LABEL_COST * 2) as u8)
                 .unwrap()
                 .collect_vec(),
             vec![b"hello", b"world"],
@@ -269,7 +271,7 @@ mod tests {
         // Budget to have 3 splits.
         assert_eq!(
             labeller
-                .label(data, data.len() as u8 + (LABEL_COST * 3))
+                .label(data, (data.len() + LABEL_COST * 3) as u8)
                 .unwrap()
                 .collect_vec(),
             vec![b"hello", b"world"],
@@ -282,16 +284,16 @@ mod tests {
         let mut labeller = Labeller::default();
         // Budget to have one split
         assert!(labeller
-            .label(data, data.len() as u8 + LABEL_COST)
+            .label(data, (data.len() + LABEL_COST) as u8)
             .is_none());
         // Budget to have two splits
         assert!(labeller
-            .label(data, data.len() as u8 + (LABEL_COST * 2))
+            .label(data, (data.len() + LABEL_COST * 2) as u8)
             .is_none());
         // Budget to have two splits
         assert_eq!(
             labeller
-                .label(data, data.len() as u8 + (LABEL_COST * 3))
+                .label(data, (data.len() + LABEL_COST * 3) as u8)
                 .unwrap()
                 .collect_vec(),
             vec![&data[..63], &data[63..126], &data[126..128]],
@@ -305,7 +307,7 @@ mod tests {
         let mut labeller = Labeller::random_with_source(rng);
         assert_eq!(
             labeller
-                .label(data, data.len() as u8 + (LABEL_COST * 10))
+                .label(data, (data.len() + LABEL_COST * 10) as u8)
                 .unwrap()
                 .collect_vec(),
             vec![&data[..58], &data[58..82], &data[82..113], &data[113..128]],
@@ -316,13 +318,16 @@ mod tests {
     fn name_encoder_basic() {
         let data = b"helloworld";
         let domain_name = Name::from_ascii("example.com.").unwrap();
-        let encoded_name = Name::from_ascii("hello.world.example.com.").unwrap();
+        let encoded_name_valid = Name::from_ascii("hello.world.example.com.").unwrap();
         let mut name_encoder = NameEncoder::new(domain_name, Labeller::exact(5)).unwrap();
-        assert_eq!(name_encoder.encode(data).unwrap(), encoded_name)
+        let encoded_name = name_encoder.encode(data).unwrap();
+        assert_eq!(encoded_name, encoded_name_valid);
+        assert_eq!(encoded_name.len(), 24);
+        assert!(encoded_name.is_fqdn());
     }
 
     #[test]
-    fn name_encoder_budget_prefix_calc() {
+    fn name_encoder_budget_calc() {
         let label = vec![b'a'; 63];
         let name = Name::new()
             .append_label(&label[..])
@@ -331,26 +336,10 @@ mod tests {
             .unwrap()
             .append_label(&label[..])
             .unwrap()
-            .append_label(&label[..label.len() - 2])
+            .append_label(&label[..label.len() - 3])
             .unwrap();
+        assert_eq!(name.len(), 253);
         assert_eq!(name.is_fqdn(), false);
-        let name_encoder = NameEncoder::new(name, Labeller::default()).unwrap();
-        assert_eq!(name_encoder.budget(), 1);
-    }
-
-    #[test]
-    fn name_encoder_budget_suffix_calc() {
-        let label = vec![b'a'; 63];
-        let name = Name::root()
-            .append_label(&label[..])
-            .unwrap()
-            .append_label(&label[..])
-            .unwrap()
-            .append_label(&label[..])
-            .unwrap()
-            .append_label(&label[..label.len() - 2])
-            .unwrap();
-        assert_eq!(name.is_fqdn(), true);
         let name_encoder = NameEncoder::new(name, Labeller::default()).unwrap();
         assert_eq!(name_encoder.budget(), 1);
     }
