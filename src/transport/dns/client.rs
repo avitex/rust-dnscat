@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -164,5 +165,14 @@ where
 
     fn max_datagram_size(&self) -> usize {
         self.endpoint.max_request_size()
+    }
+}
+
+impl<H, E> fmt::Debug for DnsClient<H, E>
+where
+    E: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "DnsClient ( {:#?} )", self.endpoint)
     }
 }

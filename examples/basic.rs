@@ -20,5 +20,6 @@ async fn main() {
         .connect_insecure(dns_client)
         .await
         .unwrap();
+    dbg!(conn);
     // TODO
 }

@@ -46,6 +46,7 @@ impl From<NameEncoderError> for DnsEndpointError {
     }
 }
 
+#[derive(Debug)]
 pub struct BasicDnsEndpoint {
     max_request_size: usize,
     name_encoder: Arc<Mutex<NameEncoder>>,

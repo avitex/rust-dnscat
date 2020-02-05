@@ -145,6 +145,7 @@ pub enum ConnectionError<E> {
     Unexpected(SupportedSessionBody),
 }
 
+#[derive(Debug)]
 pub struct Connection<T, E = ()>
 where
     T: ExchangeTransport<LazyPacket>,
@@ -223,7 +224,7 @@ where
         }
         // Extract the server initial sequence
         self.data_ack = server_syn.initial_sequence();
-        if self.is_encrypted() {}
+        if let Some(ref mut _encryption) = self.encryption {}
         // Handshake done!
         Ok(self)
     }
