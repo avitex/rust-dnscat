@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use dnscat2::conn::ConnectionBuilder;
 use dnscat2::transport::dns::*;
@@ -12,7 +12,9 @@ async fn main() {
     let dns_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), DNS_SERVER_PORT);
     let dns_server_name = Name::from_ascii("example.com.").unwrap();
     let dns_endpoint = Arc::new(BasicDnsEndpoint::new(dns_server_name).unwrap());
-    let dns_client = DnsClient::connect(dns_addr, dns_endpoint, rt.handle().clone()).await.unwrap();
+    let dns_client = DnsClient::connect(dns_addr, dns_endpoint, rt.handle().clone())
+        .await
+        .unwrap();
     let mut builder = ConnectionBuilder::default();
     builder.session_name("test");
     builder.connect_insecure(dns_client).await.unwrap();

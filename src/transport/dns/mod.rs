@@ -8,10 +8,7 @@ pub use self::name::*;
 
 use trust_dns_proto::error::ProtoError;
 
-pub use trust_dns_proto::rr::{
-    Name,
-    RecordType,
-};
+pub use trust_dns_proto::rr::{Name, RecordType};
 
 use crate::transport::DatagramError;
 

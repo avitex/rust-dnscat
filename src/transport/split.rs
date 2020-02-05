@@ -9,6 +9,8 @@ const TAIL_HEADER_LEN: usize = 1;
 /// Enum of all possible errors when handling split datagrams.
 #[derive(Debug, PartialEq)]
 pub enum SplitDatagramError {
+    Empty,
+    NotSorted,
     DataTooLong,
     MissingSequence(u8),
     LengthOutOfBounds { min: usize, max: usize, len: usize },
@@ -85,7 +87,7 @@ where
     /// # Panics
     ///
     /// Panics if the data length exceeds `max_data_len`.
-    pub fn from_data(data: &[u8], block_size: usize) -> Self {
+    pub fn from_data(data: &[u8], block_size: usize, init_seq: u8) -> Self {
         // Assert the length of data does not exceed the datagram limit
         assert!(data.len() <= Self::max_data_len(), "data length valid");
         // Validate block size.
@@ -102,11 +104,11 @@ where
         // Create a new datagram with the calculated block count
         let mut this = Self::with_capacity(block_count);
         // Push the head block to the datagram
-        this.push_block_unchecked(T::new_head(data.len() as u8, head_data));
+        this.push_block_unchecked(T::new_head(init_seq, data.len() as u8, head_data));
         // Split the tail data into chucks that will fit
         let tail_chucks = tail_data.chunks(tail_data_size);
         // For each chuck, push a tail block
-        for (seq, chunk) in Self::seq_counter(1).zip(tail_chucks) {
+        for (seq, chunk) in Self::seq_counter(init_seq + 1).zip(tail_chucks) {
             this.push_block_unchecked(T::new_tail(seq, chunk));
         }
         // Explictly state the blocks are sorted
@@ -159,7 +161,8 @@ where
     ///
     /// Returns `SplitDatagramError::DataTooLong` if the datagram can not fit the block data.
     pub fn push_block(&mut self, block: T) -> Result<(), SplitDatagramError> {
-        let next_data_len = self.data_len + block.data_field_len();
+        let is_head = self.blocks.is_empty();
+        let next_data_len = self.data_len + block.data_field_len(is_head);
         if Self::max_data_len() < next_data_len {
             Err(SplitDatagramError::DataTooLong)
         } else {
@@ -187,7 +190,12 @@ where
     ///
     /// Returns `(min_len, max_len)`
     pub fn data_len_bounds(&self) -> (usize, usize) {
-        let last_block_data_len = self.blocks.last().map(|b| b.data_field_len()).unwrap_or(0);
+        let last_block_is_head = self.blocks.len() == 1;
+        let last_block_data_len = self
+            .blocks
+            .last()
+            .map(|b| b.data_field_len(last_block_is_head))
+            .unwrap_or(0);
         let min_len = self.data_len.saturating_sub(last_block_data_len);
         let min_len = if self.block_count() == 1 {
             min_len
@@ -212,20 +220,46 @@ where
         u8::max_value() as usize
     }
 
+    /// Returns a reference to the head block.
+    ///
+    /// Note this assumes you have sorted the blocks via `Self::sort_blocks`.
+    ///
+    /// Returns `SplitDatagramError::NotSorted` if not sorted or
+    /// `SplitDatagramError::Empty` if no blocks are present.
+    pub fn head(&self) -> Result<&T, SplitDatagramError> {
+        if self.sorted {
+            self.blocks.first().ok_or(SplitDatagramError::Empty)
+        } else {
+            Err(SplitDatagramError::NotSorted)
+        }
+    }
+
+    /// Returns the head sequence number and length.
+    ///
+    /// Note this assumes you have sorted the blocks via `Self::sort_blocks`.
+    ///
+    /// Returns `SplitDatagramError::NotSorted` if not sorted or
+    /// `SplitDatagramError::Empty` if no blocks are present.
+    pub fn initial_sequence(&self) -> Result<u8, SplitDatagramError> {
+        self.head().map(SplitDatagramBlock::seq_field)
+    }
+
     /// Returns the indicated data length from the first block in the sequence.
     ///
-    /// None will be returned if there are no blocks or the first block in the
-    /// buffer is not the first block in the sequence.
-    pub fn indicated_data_len(&self) -> Option<usize> {
-        self.blocks
-            .first()
-            .and_then(SplitDatagramBlock::len_field)
+    /// Note this assumes you have sorted the blocks via `Self::sort_blocks`.
+    ///
+    /// Returns `SplitDatagramError::NotSorted` if not sorted or
+    /// `SplitDatagramError::Empty` if no blocks are present.
+    pub fn indicated_data_len(&self) -> Result<usize, SplitDatagramError> {
+        self.head()
+            .map(SplitDatagramBlock::len_field)
             .map(|len| len as usize)
     }
 
     /// Sorts the datagram blocks by their sequence.
     pub fn sort_blocks(&mut self) {
         if !self.sorted {
+            self.sorted = true;
             self.blocks.sort_by_key(SplitDatagramBlock::seq_field)
         }
     }
@@ -250,10 +284,10 @@ where
     /// Returns `SplitDatagramError::MissingSequence` if there is no head block, or
     /// is missing a sequence number in the given blocks.
     pub fn write_into(&self, buf: &mut BytesMut) -> Result<(), SplitDatagramError> {
+        // Get the initial head sequence number.
+        let init_seq = self.initial_sequence()?;
         // Now get the indicated data length from the first block
-        let data_len = self
-            .indicated_data_len()
-            .ok_or(SplitDatagramError::MissingSequence(0))?;
+        let data_len = self.indicated_data_len()?;
         // Calcuate the bounds for the data length
         let (data_len_min, data_len_max) = self.data_len_bounds();
         // Check the data is within the data length bounds
@@ -267,11 +301,11 @@ where
         // Reserves enough capacity in the buffer to write the data to
         buf.reserve(data_len.saturating_sub(buf.capacity()));
         // For each block, check the sequence and extract the data into the buffer
-        for (seq, block_ref) in Self::seq_counter(0).zip(self.blocks.iter()) {
+        for (seq, block_ref) in Self::seq_counter(init_seq).zip(self.blocks.iter()) {
             if seq != block_ref.seq_field() {
                 return Err(SplitDatagramError::MissingSequence(seq));
             }
-            block_ref.write_data_field_into(buf);
+            block_ref.write_data_field_into(buf, seq == init_seq);
         }
         buf.truncate(data_len);
         Ok(())
@@ -306,7 +340,7 @@ fn block_data_iter<'a>(data: &'a [u8]) -> impl FnMut() -> u8 + 'a {
 
 /// Trait implemented for split datagram block structures.
 pub trait SplitDatagramBlock {
-    fn new_head(len: u8, data: &[u8]) -> Self;
+    fn new_head(seq: u8, len: u8, data: &[u8]) -> Self;
 
     fn new_tail(len: u8, data: &[u8]) -> Self;
 
@@ -317,21 +351,15 @@ pub trait SplitDatagramBlock {
     fn seq_field(&self) -> u8;
 
     /// Get the `LEN` field, assuming it is a head block.
-    fn len_field(&self) -> Option<u8>;
+    fn len_field(&self) -> u8;
 
     // Get the `DATA` field.
-    fn write_data_field_into<B: BufMut>(&self, buf: &mut B);
-
-    /// Returns `true` if `SEQ` is `0`, `false otherwise.
-    #[inline]
-    fn is_head(&self) -> bool {
-        self.seq_field() == 0
-    }
+    fn write_data_field_into<B: BufMut>(&self, buf: &mut B, head: bool);
 
     /// Get the header length of the block.
     #[inline]
-    fn header_len(&self) -> usize {
-        if self.is_head() {
+    fn header_len(&self, head: bool) -> usize {
+        if head {
             HEAD_HEADER_LEN
         } else {
             TAIL_HEADER_LEN
@@ -340,8 +368,8 @@ pub trait SplitDatagramBlock {
 
     /// Get the `DATA` field length.
     #[inline]
-    fn data_field_len(&self) -> usize {
-        self.len() - self.header_len()
+    fn data_field_len(&self, head: bool) -> usize {
+        self.len() - self.header_len(head)
     }
 
     #[inline]
@@ -352,8 +380,8 @@ pub trait SplitDatagramBlock {
 }
 
 impl SplitDatagramBlock for Ipv4Addr {
-    fn new_head(len: u8, data: &[u8]) -> Self {
-        Self::new(0u8, len, data[0], data[1])
+    fn new_head(seq: u8, len: u8, data: &[u8]) -> Self {
+        Self::new(seq, len, data[0], data[1])
     }
 
     fn new_tail(seq: u8, data: &[u8]) -> Self {
@@ -368,24 +396,20 @@ impl SplitDatagramBlock for Ipv4Addr {
         self.octets()[0]
     }
 
-    fn len_field(&self) -> Option<u8> {
-        if self.is_head() {
-            Some(self.octets()[1])
-        } else {
-            None
-        }
+    fn len_field(&self) -> u8 {
+        self.octets()[1]
     }
 
-    fn write_data_field_into<B: BufMut>(&self, buf: &mut B) {
-        buf.put_slice(&self.octets()[self.header_len()..]);
+    fn write_data_field_into<B: BufMut>(&self, buf: &mut B, head: bool) {
+        buf.put_slice(&self.octets()[self.header_len(head)..]);
     }
 }
 
 impl SplitDatagramBlock for Ipv6Addr {
-    fn new_head(len: u8, data: &[u8]) -> Self {
+    fn new_head(seq: u8, len: u8, data: &[u8]) -> Self {
         let mut next = block_data_iter(data);
         Self::new(
-            u16::from_be_bytes([0u8, len]),
+            u16::from_be_bytes([seq, len]),
             u16::from_be_bytes([next(), next()]),
             u16::from_be_bytes([next(), next()]),
             u16::from_be_bytes([next(), next()]),
@@ -418,23 +442,19 @@ impl SplitDatagramBlock for Ipv6Addr {
         self.octets()[0]
     }
 
-    fn len_field(&self) -> Option<u8> {
-        if self.is_head() {
-            Some(self.octets()[1])
-        } else {
-            None
-        }
+    fn len_field(&self) -> u8 {
+        self.octets()[1]
     }
 
-    fn write_data_field_into<B: BufMut>(&self, buf: &mut B) {
-        buf.put_slice(&self.octets()[self.header_len()..]);
+    fn write_data_field_into<B: BufMut>(&self, buf: &mut B, head: bool) {
+        buf.put_slice(&self.octets()[self.header_len(head)..]);
     }
 }
 
 impl SplitDatagramBlock for Bytes {
-    fn new_head(len: u8, data: &[u8]) -> Self {
+    fn new_head(seq: u8, len: u8, data: &[u8]) -> Self {
         let mut buf = BytesMut::new();
-        buf.put_u8(0);
+        buf.put_u8(seq);
         buf.put_u8(len);
         buf.put_slice(data);
         buf.freeze()
@@ -455,16 +475,12 @@ impl SplitDatagramBlock for Bytes {
         self[0]
     }
 
-    fn len_field(&self) -> Option<u8> {
-        if self.is_head() {
-            Some(self[1])
-        } else {
-            None
-        }
+    fn len_field(&self) -> u8 {
+        self[1]
     }
 
-    fn write_data_field_into<B: BufMut>(&self, buf: &mut B) {
-        buf.put_slice(&self[self.header_len()..]);
+    fn write_data_field_into<B: BufMut>(&self, buf: &mut B, head: bool) {
+        buf.put_slice(&self[self.header_len(head)..]);
     }
 }
 
@@ -513,7 +529,7 @@ mod tests {
     fn test_split_datagram_empty() {
         assert_eq!(
             parse_blocks(vec![]),
-            Err(SplitDatagramError::MissingSequence(0))
+            Err(SplitDatagramError::Empty)
         );
     }
 
@@ -532,7 +548,7 @@ mod tests {
     #[test]
     fn test_split_datagram_from_data_ipv4() {
         let data = b"hello world";
-        let datagram: SplitDatagram<Ipv4Addr> = SplitDatagram::from_data(data, 4);
+        let datagram: SplitDatagram<Ipv4Addr> = SplitDatagram::from_data(data, 4, 0);
         assert_eq!(
             datagram.into_blocks(),
             vec![
@@ -547,7 +563,7 @@ mod tests {
     #[test]
     fn test_split_datagram_from_data_ipv6() {
         let data = &[0b0000_0001, 0b0000_0010];
-        let datagram: SplitDatagram<Ipv6Addr> = SplitDatagram::from_data(data, 16);
+        let datagram: SplitDatagram<Ipv6Addr> = SplitDatagram::from_data(data, 16, 0);
         let mut buf = BytesMut::new();
         datagram.write_into(&mut buf).unwrap();
         assert_eq!(buf.to_vec(), data);

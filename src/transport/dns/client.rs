@@ -78,13 +78,12 @@ where
     ) -> Result<Vec<Record>, ProtoError> {
         let query = Query::query(name, record_type);
         let fut = self.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
-        let answers = self
+        let mut response = self
             .runtime_handle
             .spawn(fut)
             .map(|res| res.expect("failed to execute dns lookup future"))
-            .await?
-            .take_answers();
-        Ok(answers)
+            .await?;
+        Ok(response.take_answers())
     }
 
     fn parse_response<D: Datagram>(

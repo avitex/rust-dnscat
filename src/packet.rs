@@ -25,10 +25,7 @@ where
 {
     /// Constructs a new packet given a packet ID and body.
     pub fn new(id: PacketId, body: T) -> Self {
-        Self {
-            id,
-            body,
-        }
+        Self { id, body }
     }
 
     /// Retrives the packet ID.
