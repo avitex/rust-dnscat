@@ -14,6 +14,5 @@ dnscat2 = "0.1.0"
 ## TODO
 
 - [ ] `Connection`
-- [ ] `DnsEndpoint`
 - [ ] `ConnectionEncryption`
-- [ ] `CNAME`, `MX` and `TXT` support.
+- [ ] `TXT` response support.

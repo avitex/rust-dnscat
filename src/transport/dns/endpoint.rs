@@ -6,7 +6,7 @@ use trust_dns_proto::{
     rr::{Name, RecordType},
 };
 
-use super::{NameEncoder, Labeller, NameEncoderError};
+use super::{Labeller, NameEncoder, NameEncoderError};
 
 pub type DnsEndpointRequest = (Name, RecordType);
 
@@ -67,9 +67,11 @@ impl BasicDnsEndpoint {
             request_record_type: RecordType::A,
         }
     }
-    
+
     fn lock_name_encoder(&self) -> MutexGuard<NameEncoder> {
-        self.name_encoder.lock().expect("name encoder lock poisoned")
+        self.name_encoder
+            .lock()
+            .expect("name encoder lock poisoned")
     }
 
     fn decode_name(&self, name: &Name) -> Result<Bytes, NameEncoderError> {

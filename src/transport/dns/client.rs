@@ -107,8 +107,22 @@ where
                 let addrs = answers.filter_map(|d| d.into_aaaa().ok());
                 SplitDatagram::write_iter_into(addrs, &mut bytes).map_err(DatagramError::from)?;
             }
-            RecordType::CNAME => unimplemented!(),
-            RecordType::MX => unimplemented!(),
+            RecordType::CNAME => {
+                let mut blobs = Vec::with_capacity(answers.len());
+                let names = answers.filter_map(|d| d.into_cname().ok());
+                for name in names {
+                    blobs.push(self.endpoint.parse_cname_response(name)?);
+                }
+                SplitDatagram::write_iter_into(blobs, &mut bytes).map_err(DatagramError::from)?;
+            }
+            RecordType::MX => {
+                let mut blobs = Vec::with_capacity(answers.len());
+                let names = answers.filter_map(|d| d.into_mx().ok());
+                for mx in names {
+                    blobs.push(self.endpoint.parse_mx_response(mx.exchange().clone())?);
+                }
+                SplitDatagram::write_iter_into(blobs, &mut bytes).map_err(DatagramError::from)?;
+            }
             RecordType::TXT => unimplemented!(),
             other => panic!("unsupported record type: {:?}", other),
         }
