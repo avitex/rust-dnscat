@@ -63,7 +63,7 @@ impl ConnectionBuilder {
         self,
         transport: T,
         encryption: E,
-    ) -> Result<Connection<T, E>, ConnectionError<T::Error>>
+    ) -> Result<Connection<T, E>, ConnectionError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         E: ConnectionEncryption,
@@ -74,7 +74,7 @@ impl ConnectionBuilder {
     pub async fn connect_insecure<T>(
         self,
         transport: T,
-    ) -> Result<Connection<T>, ConnectionError<T::Error>>
+    ) -> Result<Connection<T>, ConnectionError<T::Error, ()>>
     where
         T: ExchangeTransport<LazyPacket>,
     {
@@ -85,7 +85,7 @@ impl ConnectionBuilder {
         self,
         transport: T,
         encryption: Option<E>,
-    ) -> Result<Connection<T, E>, ConnectionError<T::Error>>
+    ) -> Result<Connection<T, E>, ConnectionError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         E: ConnectionEncryption,
@@ -130,11 +130,12 @@ impl Default for ConnectionBuilder {
 }
 
 #[derive(Debug)]
-pub enum ConnectionError<E> {
+pub enum ConnectionError<TE, EE> {
     Closed,
     Timeout,
     EncryptionMismatch,
-    Transport(E),
+    Transport(TE),
+    Encryption(EE),
     PacketDecode(PacketDecodeError),
     Unexpected(SupportedSessionBody),
 }
@@ -171,7 +172,7 @@ where
         self.encryption.is_some()
     }
 
-    async fn client_encryption_handshake(&mut self) -> Result<(), ConnectionError<T::Error>> {
+    async fn client_encryption_handshake(&mut self) -> Result<(), ConnectionError<T::Error, E::Error>> {
         //let encryption = self.encryption.unwrap();
         Ok(())
     }
@@ -179,7 +180,7 @@ where
     async fn client_handshake(
         mut self,
         prefer_server_name: bool,
-    ) -> Result<Self, ConnectionError<T::Error>> {
+    ) -> Result<Self, ConnectionError<T::Error, E::Error>> {
         if self.is_encrypted() {
             self.client_encryption_handshake().await?;
         }
@@ -235,13 +236,13 @@ where
     //     self.self_seq += self.self_seq.wrapping_add(len);
     // }
 
-    async fn send_data(&mut self, data: &[u8]) -> Result<(), ConnectionError<T::Error>> {
+    async fn send_data(&mut self, data: &[u8]) -> Result<(), ConnectionError<T::Error, E::Error>> {
         // let mut body = MsgBody::new(self.self_seq, self.peer_seq);
         // self.send_packet();
         unimplemented!()
     }
 
-    async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error>>
+    async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error, E::Error>>
     where
         B: Into<SupportedSessionBody>,
     {
@@ -266,7 +267,7 @@ where
         Ok(())
     }
 
-    async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError<T::Error>> {
+    async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
         let session_frame = loop {
             let session_frame_opt = loop {
                 if let Some(packet) = self.recv_buffer.pop_front() {

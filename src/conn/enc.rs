@@ -1,6 +1,8 @@
 use bytes::{Buf, Bytes};
 
 pub trait ConnectionEncryption {
+    type Error;
+
     fn encrypt<B: Buf>(&mut self, payload: &mut B) -> Bytes {
         payload.to_bytes()
     }
