@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::Buf;
 use dnscat2::conn::ConnectionBuilder;
 use dnscat2::transport::dns::*;
 use futures_timer::Delay;
@@ -23,11 +23,12 @@ async fn main() {
         .connect_insecure(dns_client)
         .await
         .unwrap();
+
     dbg!(&conn);
 
     loop {
-        dbg!(conn.send_data(Bytes::from(b"hello\n".as_ref())).await);
+        let data = b"hello\n".as_ref().to_bytes();
+        conn.send_data(data).await.unwrap();
         Delay::new(Duration::from_millis(10)).await;
     }
-    // TODO
 }

@@ -1,4 +1,6 @@
 mod builder;
+mod handshake;
+
 pub mod enc;
 
 use std::borrow::Cow;
@@ -54,70 +56,14 @@ where
     T: ExchangeTransport<LazyPacket>,
     E: ConnectionEncryption,
 {
+    /// Returns `true` if the connection is a command session.
     pub fn is_command(&self) -> bool {
         self.command
     }
 
+    /// Returns `true` if the connection is encrypted.
     pub fn is_encrypted(&self) -> bool {
         self.encryption.is_some()
-    }
-
-    async fn client_encryption_handshake(
-        &mut self,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        //let encryption = self.encryption.unwrap();
-        Ok(())
-    }
-
-    async fn client_handshake(
-        mut self,
-        prefer_server_name: bool,
-    ) -> Result<Self, ConnectionError<T::Error, E::Error>> {
-        if self.is_encrypted() {
-            self.client_encryption_handshake().await?;
-        }
-        let mut attempt = 1;
-        let server_syn = loop {
-            // Build our SYN
-            let mut client_syn =
-                SynBody::new(self.self_seq, self.is_command(), self.is_encrypted());
-            if let Some(ref sess_name) = self.sess_name {
-                client_syn.set_session_name(sess_name.clone());
-            };
-            // Send our SYN
-            self.send_packet(client_syn).await?;
-            // Recv server SYN
-            match self.recv_packet().await {
-                Ok(server_packet) => match server_packet {
-                    SupportedSessionBody::Syn(server_syn) => break server_syn,
-                    body => return Err(ConnectionError::Unexpected(body)),
-                },
-                Err(ConnectionError::Timeout) => {
-                    if attempt == self.recv_max_retry {
-                        return Err(ConnectionError::Timeout);
-                    }
-                    attempt += 1;
-                }
-                Err(err) => return Err(err),
-            }
-        };
-        // Extract the server session name if we should and can.
-        if (self.sess_name.is_none() || prefer_server_name) && server_syn.session_name().is_some() {
-            self.sess_name = server_syn
-                .session_name()
-                .map(ToString::to_string)
-                .map(Into::into);
-        }
-        // Extract if the server indicates this is a command session.
-        self.command = server_syn.flags().contains(PacketFlags::COMMAND);
-        // Check the encrypted flags match.
-        if self.is_encrypted() != server_syn.flags().contains(PacketFlags::ENCRYPTED) {
-            return Err(ConnectionError::EncryptionMismatch);
-        }
-        // Extract the server initial sequence
-        self.peer_seq = server_syn.initial_sequence();
-        // Handshake done!
-        Ok(self)
     }
 
     fn peer_seq_add(&mut self, len: usize) -> u16 {
@@ -255,8 +201,8 @@ where
 {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &mut [u8],
+        _cx: &mut Context,
+        _buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>> {
         unimplemented!()
     }
@@ -269,8 +215,8 @@ where
 {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context,
-        buf: &[u8],
+        _cx: &mut Context,
+        _buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         unimplemented!()
     }
@@ -279,7 +225,7 @@ where
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
         unimplemented!()
     }
 }

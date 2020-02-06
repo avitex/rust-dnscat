@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use bytes::BytesMut;
 
+use super::handshake::*;
 use super::{Connection, ConnectionEncryption, ConnectionError, ExchangeTransport, LazyPacket};
 
 pub struct ConnectionBuilder {
@@ -108,7 +109,7 @@ impl ConnectionBuilder {
             recv_timeout: self.recv_timeout,
             recv_max_retry: self.recv_max_retry,
         };
-        conn.client_handshake(self.prefer_peer_name).await
+        client_handshake(conn, self.prefer_peer_name).await
     }
 }
 
