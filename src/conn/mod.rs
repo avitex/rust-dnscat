@@ -7,18 +7,12 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::{Buf, BytesMut};
-use futures::future;
 use futures::io::{self, AsyncRead, AsyncWrite};
-use futures::stream::StreamExt;
-use futures_timer::Delay;
 
-use crate::packet::{
-    LazyPacket, MsgBody, Packet, PacketBody, PacketDecodeError, PacketFlags, SessionBodyBytes,
-    SessionBodyFrame, SupportedBody, SupportedSessionBody, SynBody,
-};
-use crate::transport::{Decode, Encode, ExchangeTransport};
+use crate::packet::*;
+use crate::transport::*;
 
-use self::enc::ConnectionEncryption;
+use self::enc::*;
 
 ///////////////////////////////////////////////////////////////////////////////
 
