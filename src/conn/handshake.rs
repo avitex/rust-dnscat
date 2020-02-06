@@ -1,3 +1,5 @@
+use log::debug;
+
 use super::*;
 
 pub async fn client_handshake<T, E>(
@@ -8,8 +10,11 @@ where
     T: ExchangeTransport<LazyPacket>,
     E: ConnectionEncryption,
 {
+    debug!("starting client handshake");
     if conn.is_encrypted() {
         conn = client_encryption_handshake(conn).await?;
+    } else {
+        debug!("skipping encryption handshake");
     }
     let mut attempt = 1;
     let server_syn = loop {

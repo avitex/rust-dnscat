@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use log::debug;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::io::{self, AsyncRead, AsyncWrite};
 
@@ -117,7 +118,7 @@ where
         &mut self,
         peer_msg: MsgBody,
     ) -> Result<u16, ConnectionError<T::Error, E::Error>> {
-        dbg!(&peer_msg);
+        debug!("peer message: {:?}", &peer_msg);
         let data_len = Self::data_len_from_usize(peer_msg.data().len())?;
         if peer_msg.ack() < self.self_seq {
             unimplemented!()
