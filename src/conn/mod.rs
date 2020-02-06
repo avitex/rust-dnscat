@@ -1,12 +1,13 @@
 pub mod enc;
 
 use std::borrow::Cow;
+use std::cmp;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use futures::io::{self, AsyncRead, AsyncWrite};
 
 use crate::packet::*;
@@ -20,6 +21,7 @@ pub struct ConnectionBuilder {
     sess_id: Option<u16>,
     sess_name: Cow<'static, str>,
     init_seq: Option<u16>,
+    command: bool,
     recv_timeout: Duration,
     recv_max_retry: usize,
     prefer_peer_name: bool,
@@ -41,6 +43,11 @@ impl ConnectionBuilder {
 
     pub fn initial_sequence(mut self, init_seq: u16) -> Self {
         self.init_seq = Some(init_seq);
+        self
+    }
+
+    pub fn command(mut self, value: bool) -> Self {
+        self.command = value;
         self
     }
 
@@ -96,7 +103,7 @@ impl ConnectionBuilder {
         } else {
             Some(self.sess_name)
         };
-        let command = false;
+        let command = self.command;
         let peer_seq = 0;
         let self_seq = self.init_seq.unwrap_or_else(rand::random);
         let conn = Connection {
@@ -122,6 +129,7 @@ impl Default for ConnectionBuilder {
             sess_id: None,
             sess_name: Cow::Borrowed(""),
             init_seq: None,
+            command: false,
             recv_max_retry: 2,
             recv_timeout: Duration::from_secs(2),
             prefer_peer_name: false,
@@ -172,7 +180,9 @@ where
         self.encryption.is_some()
     }
 
-    async fn client_encryption_handshake(&mut self) -> Result<(), ConnectionError<T::Error, E::Error>> {
+    async fn client_encryption_handshake(
+        &mut self,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         //let encryption = self.encryption.unwrap();
         Ok(())
     }
@@ -228,18 +238,71 @@ where
         Ok(self)
     }
 
-    // fn peer_seq_add(&mut self, len: u16) {
-    //     self.peer_seq += self.peer_seq.wrapping_add(len);
-    // }
+    fn peer_seq_add(&mut self, len: usize) -> u16 {
+        assert!(len <= (u16::max_value() as usize));
+        self.peer_seq = self.peer_seq.wrapping_add(len as u16);
+        self.peer_seq
+    }
 
-    // fn self_seq_add(&mut self, len: u16) {
-    //     self.self_seq += self.self_seq.wrapping_add(len);
-    // }
+    fn self_seq_add(&mut self, len: usize) -> u16 {
+        assert!(len <= (u16::max_value() as usize));
+        self.self_seq = self.self_seq.wrapping_add(len as u16);
+        self.self_seq
+    }
 
-    async fn send_data(&mut self, data: &[u8]) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        // let mut body = MsgBody::new(self.self_seq, self.peer_seq);
-        // self.send_packet();
-        unimplemented!()
+    fn max_message_data(&self) -> usize {
+        let constant_size = Packet::<SessionBodyFrame<MsgBody>>::header_size()
+            + SessionBodyFrame::<MsgBody>::header_size()
+            + MsgBody::header_size();
+
+        let constant_size = if let Some(ref encryption) = self.encryption {
+            constant_size + encryption.additional_size()
+        } else {
+            constant_size
+        };
+
+        let absolute = self.transport.max_datagram_size() - constant_size;
+
+        cmp::min(u16::max_value() as usize, absolute)
+    }
+
+    pub async fn send_data(
+        &mut self,
+        mut data: Bytes,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        'send_main: loop {
+            if data.is_empty() {
+                return Ok(());
+            }
+            let data_part_size = cmp::min(data.len(), self.max_message_data());
+            let data_chuck = data.split_to(data_part_size);
+            'send_chunk: loop {
+                self.send_data_chunk(data_chuck.clone()).await?;
+                match self.recv_packet().await? {
+                    SupportedSessionBody::Msg(server_msg) => {
+                        let bytes_acked = server_msg.ack().saturating_sub(self.self_seq) as usize;
+                        if bytes_acked == data_part_size {
+                            self.self_seq_add(bytes_acked);
+                            self.peer_seq_add(server_msg.data().len());
+                            dbg!(server_msg);
+                            continue 'send_main;
+                        } else {
+                            continue 'send_chunk;
+                        }
+                    }
+                    unexpected_body => return Err(ConnectionError::Unexpected(unexpected_body)),
+                }
+            }
+        }
+    }
+
+    async fn send_data_chunk(
+        &mut self,
+        data_chuck: Bytes,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
+        msg_body.set_data(data_chuck);
+        self.send_packet(msg_body).await
     }
 
     async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error, E::Error>>
@@ -267,7 +330,9 @@ where
         Ok(())
     }
 
-    async fn recv_packet(&mut self) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
+    async fn recv_packet(
+        &mut self,
+    ) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
         let session_frame = loop {
             let session_frame_opt = loop {
                 if let Some(packet) = self.recv_buffer.pop_front() {
@@ -281,7 +346,8 @@ where
             if let Some(session_frame) = session_frame_opt {
                 break session_frame;
             } else {
-                self.send_data(&[]).await?;
+                dbg!("sending empty chunk");
+                self.send_data_chunk(Bytes::new()).await?;
             }
         };
         if self.sess_id != session_frame.session_id() {

@@ -1,8 +1,11 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use dnscat2::conn::ConnectionBuilder;
 use dnscat2::transport::dns::*;
+use futures_timer::Delay;
 
 const DNS_SERVER_PORT: u16 = 53531;
 
@@ -15,11 +18,16 @@ async fn main() {
     let dns_client = DnsClient::connect(dns_addr, dns_endpoint, rt)
         .await
         .unwrap();
-    let conn = ConnectionBuilder::default()
+    let mut conn = ConnectionBuilder::default()
         .session_name("test")
         .connect_insecure(dns_client)
         .await
         .unwrap();
-    dbg!(conn);
+    dbg!(&conn);
+
+    loop {
+        dbg!(conn.send_data(Bytes::from(b"hello\n".as_ref())).await);
+        Delay::new(Duration::from_millis(10)).await;
+    }
     // TODO
 }

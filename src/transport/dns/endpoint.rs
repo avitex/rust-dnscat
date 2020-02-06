@@ -55,7 +55,7 @@ pub struct BasicDnsEndpoint {
 
 impl BasicDnsEndpoint {
     pub fn new(constant: Name) -> Result<Self, DnsEndpointError> {
-        let name_encoder = NameEncoder::new(constant, Labeller::default())?;
+        let name_encoder = NameEncoder::new(constant, Labeller::random())?;
         Ok(Self::new_with_encoder(name_encoder))
     }
 

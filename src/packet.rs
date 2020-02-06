@@ -39,6 +39,11 @@ where
         &self.body
     }
 
+    /// Returns a mut reference to the packet body.
+    pub fn body_mut(&mut self) -> &mut T {
+        &mut self.body
+    }
+
     /// Retrives the packet kind.
     pub fn kind(&self) -> PacketKind {
         self.body.packet_kind()
@@ -49,9 +54,9 @@ where
         self.body
     }
 
-    /// Constant size of the packet (without user data).
-    pub fn constant_size(&self) -> usize {
-        size_of::<u16>() + self.body.constant_size()
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<PacketId>() + size_of::<u8>()
     }
 }
 
@@ -89,9 +94,6 @@ pub trait PacketBody: Sized + Encode {
 
     /// Decode a packet kind.
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError>;
-
-    /// Retrieves the constant size (without user data) of a packet.
-    fn constant_size(&self) -> usize;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -242,10 +244,20 @@ pub enum SupportedBody<T> {
     Session(SessionBodyFrame<T>),
 }
 
-impl<T> SupportedBody<T> {
+impl<T> SupportedBody<T>
+where
+    T: PacketBody,
+{
     pub fn into_session_frame(self) -> Option<SessionBodyFrame<T>> {
         match self {
             Self::Session(frame) => Some(frame),
+            _ => None,
+        }
+    }
+
+    pub fn session_body_mut(&mut self) -> Option<&mut T> {
+        match self {
+            Self::Session(ref mut frame) => Some(frame.body_mut()),
             _ => None,
         }
     }
@@ -283,13 +295,6 @@ where
             kind => Err(PacketDecodeError::UnknownKind(kind.into())),
         }
     }
-
-    fn constant_size(&self) -> usize {
-        match self {
-            Self::Ping(b) => b.constant_size(),
-            Self::Session(b) => b.constant_size(),
-        }
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -318,6 +323,15 @@ where
     pub fn into_body(self) -> T {
         self.body
     }
+
+    pub fn body_mut(&mut self) -> &mut T {
+        &mut self.body
+    }
+
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<SessionId>()
+    }
 }
 
 impl<T> Encode for SessionBodyFrame<T>
@@ -342,10 +356,6 @@ where
         let id = parse::be_u16(b)?;
         let body = T::decode_kind(kind, b)?;
         Ok(Self { id, body })
-    }
-
-    fn constant_size(&self) -> usize {
-        size_of::<u16>() + self.body.constant_size()
     }
 }
 
@@ -385,15 +395,6 @@ impl PacketBody for SupportedSessionBody {
             PacketKind::FIN => FinBody::decode(b).map(Self::Fin),
             PacketKind::ENC => EncBody::decode(b).map(Self::Enc),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
-        }
-    }
-
-    fn constant_size(&self) -> usize {
-        match self {
-            Self::Syn(b) => b.constant_size(),
-            Self::Msg(b) => b.constant_size(),
-            Self::Fin(b) => b.constant_size(),
-            Self::Enc(b) => b.constant_size(),
         }
     }
 }
@@ -457,10 +458,6 @@ impl PacketBody for SessionBodyBytes {
 
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         Ok(Self::new(kind, b.to_bytes()))
-    }
-
-    fn constant_size(&self) -> usize {
-        0
     }
 }
 
@@ -557,6 +554,11 @@ impl SynBody {
         self.sess_name = sess_name;
         self.sess_name.len() + 1
     }
+
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<u16>() * 2
+    }
 }
 
 impl Encode for SynBody {
@@ -601,10 +603,6 @@ impl PacketBody for SynBody {
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
-
-    fn constant_size(&self) -> usize {
-        size_of::<u16>() * 2
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -638,6 +636,16 @@ impl MsgBody {
         self.ack
     }
 
+    /// Sets the seq number.
+    pub fn set_seq(&mut self, seq: u16) {
+        self.seq = seq;
+    }
+
+    /// Sets the ack number.
+    pub fn set_ack(&mut self, ack: u16) {
+        self.ack = ack;
+    }
+
     /// Set the message data.
     ///
     /// Returns the size added to the message.
@@ -654,6 +662,11 @@ impl MsgBody {
     /// Consumes self into the message data.
     pub fn into_data(self) -> Bytes {
         self.data
+    }
+
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<u16>() * 2
     }
 }
 
@@ -689,10 +702,6 @@ impl PacketBody for MsgBody {
             PacketKind::MSG => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
-    }
-
-    fn constant_size(&self) -> usize {
-        size_of::<u16>() * 2
     }
 }
 
@@ -749,10 +758,6 @@ impl PacketBody for FinBody {
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
-
-    fn constant_size(&self) -> usize {
-        1
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -789,6 +794,11 @@ impl EncBody {
     pub fn body(&self) -> &EncBodyVariant {
         &self.body
     }
+
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<u16>() + size_of::<u8>()
+    }
 }
 
 impl Encode for EncBody {
@@ -822,10 +832,6 @@ impl PacketBody for EncBody {
             PacketKind::ENC => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
-    }
-
-    fn constant_size(&self) -> usize {
-        size_of::<u8>() + size_of::<u16>() + self.body.constant_size()
     }
 }
 
@@ -961,6 +967,11 @@ impl PingBody {
     pub fn data(&self) -> &str {
         self.data.as_ref()
     }
+
+    /// Constant size of the header.
+    pub fn header_size() -> usize {
+        size_of::<u16>()
+    }
 }
 
 impl Encode for PingBody {
@@ -991,10 +1002,6 @@ impl PacketBody for PingBody {
             PacketKind::PING => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
-    }
-
-    fn constant_size(&self) -> usize {
-        size_of::<u16>() + 1
     }
 }
 
