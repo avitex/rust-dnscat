@@ -28,7 +28,7 @@ pub struct ConnectionBuilder {
     init_seq: Option<u16>,
     recv_timeout: Duration,
     recv_max_retry: usize,
-    prefer_server_name: bool,
+    prefer_peer_name: bool,
 }
 
 impl ConnectionBuilder {
@@ -50,8 +50,8 @@ impl ConnectionBuilder {
         self
     }
 
-    pub fn prefer_server_name(mut self, value: bool) -> Self {
-        self.prefer_server_name = value;
+    pub fn prefer_peer_name(mut self, value: bool) -> Self {
+        self.prefer_peer_name = value;
         self
     }
 
@@ -103,14 +103,14 @@ impl ConnectionBuilder {
             Some(self.sess_name)
         };
         let command = false;
-        let data_ack = 0;
-        let data_seq = self.init_seq.unwrap_or_else(rand::random);
+        let peer_seq = 0;
+        let self_seq = self.init_seq.unwrap_or_else(rand::random);
         let conn = Connection {
             sess_id,
             sess_name,
             transport,
-            data_ack,
-            data_seq,
+            peer_seq,
+            self_seq,
             command,
             encryption,
             send_buffer: BytesMut::new(),
@@ -118,7 +118,7 @@ impl ConnectionBuilder {
             recv_timeout: self.recv_timeout,
             recv_max_retry: self.recv_max_retry,
         };
-        conn.handshake(self.prefer_server_name).await
+        conn.client_handshake(self.prefer_peer_name).await
     }
 }
 
@@ -130,7 +130,7 @@ impl Default for ConnectionBuilder {
             init_seq: None,
             recv_max_retry: 2,
             recv_timeout: Duration::from_secs(2),
-            prefer_server_name: false,
+            prefer_peer_name: false,
         }
     }
 }
@@ -153,8 +153,8 @@ where
 {
     sess_id: u16,
     sess_name: Option<Cow<'static, str>>,
-    data_ack: u16,
-    data_seq: u16,
+    peer_seq: u16,
+    self_seq: u16,
     command: bool,
     transport: T,
     encryption: Option<E>,
@@ -177,21 +177,26 @@ where
         self.encryption.is_some()
     }
 
-    async fn handshake(
+    async fn client_encryption_handshake(&mut self) -> Result<(), ConnectionError<T::Error>> {
+        //let encryption = self.encryption.unwrap();
+        Ok(())
+    }
+
+    async fn client_handshake(
         mut self,
         prefer_server_name: bool,
     ) -> Result<Self, ConnectionError<T::Error>> {
-        let mut packet_flags = PacketFlags::default();
-        if self.is_command() {
-            packet_flags.insert(PacketFlags::COMMAND);
-        }
         if self.is_encrypted() {
-            packet_flags.insert(PacketFlags::ENCRYPTED);
+            self.client_encryption_handshake().await?;
         }
         let mut attempt = 1;
         let server_syn = loop {
             // Build our SYN
-            let client_syn = SynBody::new(self.data_seq, packet_flags, self.sess_name.clone());
+            let mut client_syn =
+                SynBody::new(self.self_seq, self.is_command(), self.is_encrypted());
+            if let Some(ref sess_name) = self.sess_name {
+                client_syn.set_session_name(sess_name.clone());
+            };
             // Send our SYN
             self.send_packet(client_syn).await?;
             // Recv server SYN
@@ -223,13 +228,22 @@ where
             return Err(ConnectionError::EncryptionMismatch);
         }
         // Extract the server initial sequence
-        self.data_ack = server_syn.initial_sequence();
-        if let Some(ref mut _encryption) = self.encryption {}
+        self.peer_seq = server_syn.initial_sequence();
         // Handshake done!
         Ok(self)
     }
 
+    // fn peer_seq_add(&mut self, len: u16) {
+    //     self.peer_seq += self.peer_seq.wrapping_add(len);
+    // }
+
+    // fn self_seq_add(&mut self, len: u16) {
+    //     self.self_seq += self.self_seq.wrapping_add(len);
+    // }
+
     async fn send_data(&mut self, data: &[u8]) -> Result<(), ConnectionError<T::Error>> {
+        // let mut body = MsgBody::new(self.self_seq, self.peer_seq);
+        // self.send_packet();
         unimplemented!()
     }
 

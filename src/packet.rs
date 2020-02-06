@@ -1,3 +1,4 @@
+use std::mem::size_of;
 use std::str::{self, Utf8Error};
 
 use bitflags::bitflags;
@@ -47,6 +48,11 @@ where
     pub fn into_body(self) -> T {
         self.body
     }
+
+    /// Constant size of the packet (without user data).
+    pub fn constant_size(&self) -> usize {
+        size_of::<u16>() + self.body.constant_size()
+    }
 }
 
 impl<T> Encode for Packet<T>
@@ -83,6 +89,9 @@ pub trait PacketBody: Sized + Encode {
 
     /// Decode a packet kind.
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError>;
+
+    /// Retrieves the constant size (without user data) of a packet.
+    fn constant_size(&self) -> usize;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -274,6 +283,13 @@ where
             kind => Err(PacketDecodeError::UnknownKind(kind.into())),
         }
     }
+
+    fn constant_size(&self) -> usize {
+        match self {
+            Self::Ping(b) => b.constant_size(),
+            Self::Session(b) => b.constant_size(),
+        }
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -327,6 +343,10 @@ where
         let body = T::decode_kind(kind, b)?;
         Ok(Self { id, body })
     }
+
+    fn constant_size(&self) -> usize {
+        size_of::<u16>() + self.body.constant_size()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -365,6 +385,15 @@ impl PacketBody for SupportedSessionBody {
             PacketKind::FIN => FinBody::decode(b).map(Self::Fin),
             PacketKind::ENC => EncBody::decode(b).map(Self::Enc),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
+        }
+    }
+
+    fn constant_size(&self) -> usize {
+        match self {
+            Self::Syn(b) => b.constant_size(),
+            Self::Msg(b) => b.constant_size(),
+            Self::Fin(b) => b.constant_size(),
+            Self::Enc(b) => b.constant_size(),
         }
     }
 }
@@ -429,6 +458,10 @@ impl PacketBody for SessionBodyBytes {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         Ok(Self::new(kind, b.to_bytes()))
     }
+
+    fn constant_size(&self) -> usize {
+        0
+    }
 }
 
 impl From<SynBody> for SessionBodyBytes {
@@ -468,35 +501,18 @@ pub struct SynBody {
 
 impl SynBody {
     /// Contructs a new `SYN` packet.
-    ///
-    /// # Notes
-    ///
-    /// The `NAME` packet flag is automatically set if `sess_name` is some.
-    ///
-    /// # Panics
-    ///
-    /// Panics if session flag or option is set, but has an empty str value.
-    pub fn new<S>(init_seq: u16, mut flags: PacketFlags, sess_name: Option<S>) -> Self
-    where
-        S: Into<StringBytes>,
-    {
-        let sess_name = if let Some(sess_name) = sess_name.map(Into::into) {
-            assert!(
-                !sess_name.is_empty(),
-                "session name is some but has empty value"
-            );
-            flags.insert(PacketFlags::NAME);
-            sess_name
-        } else {
-            if flags.contains(PacketFlags::NAME) {
-                panic!("session name flag is set but has empty value");
-            }
-            StringBytes::new()
-        };
+    pub fn new(init_seq: u16, command: bool, encrypted: bool) -> Self {
+        let mut flags = PacketFlags::empty();
+        if command {
+            flags.insert(PacketFlags::COMMAND);
+        }
+        if encrypted {
+            flags.insert(PacketFlags::ENCRYPTED);
+        }
         Self {
             init_seq,
             flags,
-            sess_name,
+            sess_name: StringBytes::new(),
         }
     }
 
@@ -523,6 +539,24 @@ impl SynBody {
     pub fn has_session_name(&self) -> bool {
         self.flags.contains(PacketFlags::NAME)
     }
+
+    /// Sets the session name field and flag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if session name is empty.
+    ///
+    /// Returns the size added to the packet.
+    pub fn set_session_name<S>(&mut self, sess_name: S) -> usize
+    where
+        S: Into<StringBytes>,
+    {
+        let sess_name = sess_name.into();
+        assert!(!sess_name.is_empty(), "session name is empty");
+        self.flags.insert(PacketFlags::NAME);
+        self.sess_name = sess_name;
+        self.sess_name.len() + 1
+    }
 }
 
 impl Encode for SynBody {
@@ -544,11 +578,15 @@ impl Decode for SynBody {
         let flags_raw = parse::be_u16(b)?;
         let flags = PacketFlags::from_bits_truncate(flags_raw);
         let sess_name = if flags.contains(PacketFlags::NAME) {
-            Some(parse::nt_string::<PacketDecodeError>(b)?)
+            parse::nt_string::<PacketDecodeError>(b)?
         } else {
-            None
+            StringBytes::new()
         };
-        Ok(Self::new(init_seq, flags, sess_name))
+        Ok(Self {
+            init_seq,
+            flags,
+            sess_name,
+        })
     }
 }
 
@@ -562,6 +600,10 @@ impl PacketBody for SynBody {
             PacketKind::SYN => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
+    }
+
+    fn constant_size(&self) -> usize {
+        size_of::<u16>() * 2
     }
 }
 
@@ -577,9 +619,13 @@ pub struct MsgBody {
 }
 
 impl MsgBody {
-    /// Constructs a new `MSG` packet.
-    pub fn new(seq: u16, ack: u16, data: Bytes) -> Self {
-        Self { seq, ack, data }
+    /// Constructs a new empty `MSG` packet.
+    pub fn new(seq: u16, ack: u16) -> Self {
+        Self {
+            seq,
+            ack,
+            data: Bytes::new(),
+        }
     }
 
     /// Retrieves the seq number.
@@ -590,6 +636,14 @@ impl MsgBody {
     /// Retrieves the ack number.
     pub fn ack(&self) -> u16 {
         self.ack
+    }
+
+    /// Set the message data.
+    ///
+    /// Returns the size added to the message.
+    pub fn set_data(&mut self, data: Bytes) -> usize {
+        self.data = data;
+        self.data.len()
     }
 
     /// Retrieves the message data.
@@ -617,7 +671,11 @@ impl Decode for MsgBody {
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
         let seq = parse::be_u16(b)?;
         let ack = parse::be_u16(b)?;
-        Ok(Self::new(seq, ack, b.to_bytes()))
+        Ok(Self {
+            seq,
+            ack,
+            data: b.to_bytes(),
+        })
     }
 }
 
@@ -631,6 +689,10 @@ impl PacketBody for MsgBody {
             PacketKind::MSG => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
+    }
+
+    fn constant_size(&self) -> usize {
+        size_of::<u16>() * 2
     }
 }
 
@@ -686,6 +748,10 @@ impl PacketBody for FinBody {
             PacketKind::FIN => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
+    }
+
+    fn constant_size(&self) -> usize {
+        1
     }
 }
 
@@ -757,6 +823,10 @@ impl PacketBody for EncBody {
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
     }
+
+    fn constant_size(&self) -> usize {
+        size_of::<u8>() + size_of::<u16>() + self.body.constant_size()
+    }
 }
 
 /// Enum of all supported encryption packet bodies.
@@ -800,6 +870,13 @@ impl EncBodyVariant {
             EncBodyKind::AUTH => Ok(Self::Auth {
                 authenticator: Self::decode_part(b)?,
             }),
+        }
+    }
+
+    fn constant_size(&self) -> usize {
+        match self {
+            Self::Init { .. } => 32 * 2,
+            Self::Auth { .. } => 32,
         }
     }
 
@@ -914,6 +991,10 @@ impl PacketBody for PingBody {
             PacketKind::PING => Self::decode(b),
             other => Err(PacketDecodeError::UnknownKind(other.into())),
         }
+    }
+
+    fn constant_size(&self) -> usize {
+        size_of::<u16>() + 1
     }
 }
 
