@@ -12,6 +12,7 @@ pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 ///////////////////////////////////////////////////////////////////////////////
 // Packet
 
+/// `u16` packet id.
 pub type PacketId = u16;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +301,7 @@ where
 ///////////////////////////////////////////////////////////////////////////////
 // Session Packet
 
+/// ` u16` session id.
 pub type SessionId = u16;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -491,14 +493,14 @@ impl From<EncBody> for SessionBodyBytes {
 /// A `SYN` packet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SynBody {
-    init_seq: u16,
+    init_seq: Sequence,
     flags: PacketFlags,
     sess_name: StringBytes,
 }
 
 impl SynBody {
     /// Contructs a new `SYN` packet.
-    pub fn new(init_seq: u16, command: bool, encrypted: bool) -> Self {
+    pub fn new(init_seq: Sequence, command: bool, encrypted: bool) -> Self {
         let mut flags = PacketFlags::empty();
         if command {
             flags.insert(PacketFlags::COMMAND);
@@ -514,7 +516,7 @@ impl SynBody {
     }
 
     /// Retrives the initial sequence.
-    pub fn initial_sequence(&self) -> u16 {
+    pub fn initial_sequence(&self) -> Sequence {
         self.init_seq
     }
 
@@ -557,7 +559,7 @@ impl SynBody {
 
     /// Constant size of the header.
     pub fn header_size() -> usize {
-        size_of::<u16>() * 2
+        size_of::<Sequence>() * 2
     }
 }
 
@@ -608,17 +610,20 @@ impl PacketBody for SynBody {
 ///////////////////////////////////////////////////////////////////////////////
 // MSG Packet
 
+/// `u16` sequence value.
+pub type Sequence = u16;
+
 /// A `MSG` packet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MsgBody {
-    seq: u16,
-    ack: u16,
+    seq: Sequence,
+    ack: Sequence,
     data: Bytes,
 }
 
 impl MsgBody {
     /// Constructs a new empty `MSG` packet.
-    pub fn new(seq: u16, ack: u16) -> Self {
+    pub fn new(seq: Sequence, ack: Sequence) -> Self {
         Self {
             seq,
             ack,
@@ -627,22 +632,22 @@ impl MsgBody {
     }
 
     /// Retrieves the seq number.
-    pub fn seq(&self) -> u16 {
+    pub fn seq(&self) -> Sequence {
         self.seq
     }
 
     /// Retrieves the ack number.
-    pub fn ack(&self) -> u16 {
+    pub fn ack(&self) -> Sequence {
         self.ack
     }
 
     /// Sets the seq number.
-    pub fn set_seq(&mut self, seq: u16) {
+    pub fn set_seq(&mut self, seq: Sequence) {
         self.seq = seq;
     }
 
     /// Sets the ack number.
-    pub fn set_ack(&mut self, ack: u16) {
+    pub fn set_ack(&mut self, ack: Sequence) {
         self.ack = ack;
     }
 
@@ -666,7 +671,7 @@ impl MsgBody {
 
     /// Constant size of the header.
     pub fn header_size() -> usize {
-        size_of::<u16>() * 2
+        size_of::<Sequence>() * 2
     }
 }
 
@@ -763,16 +768,19 @@ impl PacketBody for FinBody {
 ///////////////////////////////////////////////////////////////////////////////
 // ENC Packet
 
+/// `u16` crypto flags.
+pub type CryptoFlags = u16;
+
 /// A `ENC` packet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncBody {
-    cryp_flags: u16,
+    cryp_flags: CryptoFlags,
     body: EncBodyVariant,
 }
 
 impl EncBody {
     /// Constructs a new `ENC` packet.
-    pub fn new(cryp_flags: u16, body: EncBodyVariant) -> Self {
+    pub fn new(cryp_flags: CryptoFlags, body: EncBodyVariant) -> Self {
         Self { cryp_flags, body }
     }
 
@@ -781,7 +789,7 @@ impl EncBody {
     /// # Notes
     ///
     /// This field is currently not used in the original specification.
-    pub fn crypto_flags(&self) -> u16 {
+    pub fn crypto_flags(&self) -> CryptoFlags {
         self.cryp_flags
     }
 
@@ -797,7 +805,7 @@ impl EncBody {
 
     /// Constant size of the header.
     pub fn header_size() -> usize {
-        size_of::<u16>() + size_of::<u8>()
+        size_of::<CryptoFlags>() + size_of::<u8>()
     }
 }
 
@@ -932,16 +940,19 @@ impl EncBodyKind {
 ///////////////////////////////////////////////////////////////////////////////
 // PING Packet
 
+/// ` u16` ping id.
+pub type PingId = u16;
+
 /// A `PING` packet body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PingBody {
-    ping_id: u16,
+    ping_id: PingId,
     data: StringBytes,
 }
 
 impl PingBody {
     /// Constructs a new `PING` packet.
-    pub fn new<S>(ping_id: u16, data: S) -> Self
+    pub fn new<S>(ping_id: PingId, data: S) -> Self
     where
         S: Into<StringBytes>,
     {
@@ -952,7 +963,7 @@ impl PingBody {
     }
 
     /// Retrives the ping ID.
-    pub fn ping_id(&self) -> u16 {
+    pub fn ping_id(&self) -> PingId {
         self.ping_id
     }
 
@@ -963,7 +974,7 @@ impl PingBody {
 
     /// Constant size of the header.
     pub fn header_size() -> usize {
-        size_of::<u16>()
+        size_of::<PingId>()
     }
 }
 

@@ -28,6 +28,7 @@ pub enum ConnectionError<TE, EE> {
     EncryptionMismatch,
     Transport(TE),
     Encryption(EE),
+    LengthTooLong,
     PacketDecode(PacketDecodeError),
     Unexpected(SupportedSessionBody),
 }
@@ -66,32 +67,65 @@ where
         self.encryption.is_some()
     }
 
-    fn peer_seq_add(&mut self, len: usize) -> u16 {
-        assert!(len <= (u16::max_value() as usize));
-        self.peer_seq = self.peer_seq.wrapping_add(len as u16);
-        self.peer_seq
-    }
-
-    fn self_seq_add(&mut self, len: usize) -> u16 {
-        assert!(len <= (u16::max_value() as usize));
-        self.self_seq = self.self_seq.wrapping_add(len as u16);
-        self.self_seq
-    }
-
-    fn max_message_data(&self) -> usize {
+    /// Returns the max data chunk size that can be sent in one datagram.
+    ///
+    /// This is calculated based on the transport's indicated capability,
+    /// minus the cost of the framing and/or encryption framing if enabled.
+    pub fn max_data_chunk_size(&self) -> u16 {
+        // First calculate the total fixed size of a msg packet.
         let constant_size = Packet::<SessionBodyFrame<MsgBody>>::header_size()
             + SessionBodyFrame::<MsgBody>::header_size()
             + MsgBody::header_size();
-
+        // If this connection is encrypted, add the additional size required.
         let constant_size = if let Some(ref encryption) = self.encryption {
             constant_size + encryption.additional_size()
         } else {
             constant_size
         };
+        // Subtract the total size required from what the transport
+        // can provide to get the budget we can use.
+        let budget = self.transport.max_datagram_size() - constant_size;
+        // Limit the budget to the max size of a sequence (u16) value.
+        if budget > Sequence::max_value() as usize {
+            u16::max_value()
+        } else {
+            budget as u16
+        }
+    }
 
-        let absolute = self.transport.max_datagram_size() - constant_size;
+    fn calc_chunk_len(&self, data_len: usize) -> u16 {
+        cmp::min(data_len, self.max_data_chunk_size() as usize) as u16
+    }
 
-        cmp::min(u16::max_value() as usize, absolute)
+    fn data_len_from_usize(len: usize) -> Result<u16, ConnectionError<T::Error, E::Error>> {
+        if len > Sequence::max_value() as usize {
+            Err(ConnectionError::LengthTooLong)
+        } else {
+            Ok(len as u16)
+        }
+    }
+
+    fn peer_seq_add(&mut self, len: u16) {
+        self.peer_seq = self.peer_seq.wrapping_add(len);
+    }
+
+    fn self_seq_add(&mut self, len: u16) {
+        self.self_seq = self.self_seq.wrapping_add(len);
+    }
+
+    fn handle_peer_msg(
+        &mut self,
+        peer_msg: MsgBody,
+    ) -> Result<u16, ConnectionError<T::Error, E::Error>> {
+        dbg!(&peer_msg);
+        let data_len = Self::data_len_from_usize(peer_msg.data().len())?;
+        if peer_msg.ack() < self.self_seq {
+            unimplemented!()
+        }
+        let bytes_acked = peer_msg.ack() - self.self_seq;
+        self.self_seq_add(bytes_acked);
+        self.peer_seq_add(data_len);
+        Ok(bytes_acked)
     }
 
     pub async fn send_data(
@@ -102,17 +136,13 @@ where
             if data.is_empty() {
                 return Ok(());
             }
-            let data_part_size = cmp::min(data.len(), self.max_message_data());
-            let data_chuck = data.split_to(data_part_size);
+            let data_chunk_len = self.calc_chunk_len(data.len());
+            let data_chunk = data.split_to(data_chunk_len as usize);
             'send_chunk: loop {
-                self.send_data_chunk(data_chuck.clone()).await?;
+                self.send_data_chunk(data_chunk.clone()).await?;
                 match self.recv_packet().await? {
-                    SupportedSessionBody::Msg(server_msg) => {
-                        let bytes_acked = server_msg.ack().saturating_sub(self.self_seq) as usize;
-                        if bytes_acked == data_part_size {
-                            self.self_seq_add(bytes_acked);
-                            self.peer_seq_add(server_msg.data().len());
-                            dbg!(server_msg);
+                    SupportedSessionBody::Msg(peer_msg) => {
+                        if self.handle_peer_msg(peer_msg)? == data_chunk_len {
                             continue 'send_main;
                         } else {
                             continue 'send_chunk;
@@ -126,10 +156,10 @@ where
 
     async fn send_data_chunk(
         &mut self,
-        data_chuck: Bytes,
+        data_chunk: Bytes,
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
-        msg_body.set_data(data_chuck);
+        msg_body.set_data(data_chunk);
         self.send_packet(msg_body).await
     }
 
