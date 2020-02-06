@@ -7,6 +7,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::util::parse::{self, Needed, NoNullTermError};
 use crate::util::{hex, Decode, Encode, StringBytes};
 
+/// A standard supported packet with an undecoded session body.
 pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -15,6 +16,7 @@ pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 /// `u16` packet id.
 pub type PacketId = u16;
 
+/// A `DNSCAT` packet frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Packet<T = SupportedBody<SupportedSessionBody>> {
     id: PacketId,
@@ -301,7 +303,7 @@ where
 ///////////////////////////////////////////////////////////////////////////////
 // Session Packet
 
-/// ` u16` session id.
+/// `u16` session id.
 pub type SessionId = u16;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -940,7 +942,7 @@ impl EncBodyKind {
 ///////////////////////////////////////////////////////////////////////////////
 // PING Packet
 
-/// ` u16` ping id.
+/// `u16` ping id.
 pub type PingId = u16;
 
 /// A `PING` packet body.
