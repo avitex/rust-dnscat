@@ -879,13 +879,6 @@ impl EncBodyVariant {
         }
     }
 
-    fn constant_size(&self) -> usize {
-        match self {
-            Self::Init { .. } => 32 * 2,
-            Self::Auth { .. } => 32,
-        }
-    }
-
     fn decode_part(b: &mut Bytes) -> Result<Bytes, PacketDecodeError> {
         parse::np_hex_string::<PacketDecodeError>(b, Self::PART_SIZE)
     }
