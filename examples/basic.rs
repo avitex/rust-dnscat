@@ -2,11 +2,13 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Buf;
 use dnscat2::conn::ConnectionBuilder;
 use dnscat2::transport::dns::*;
+
 use futures_timer::Delay;
 use log::debug;
+use rand::{thread_rng, Rng};
+use rand::distributions::Alphanumeric;
 
 const DNS_SERVER_PORT: u16 = 53531;
 
@@ -31,9 +33,18 @@ async fn main() {
 
     debug!("connected: {:?}", conn);
 
+    let mut rng = thread_rng();
+
     loop {
-        let data = b"hello\n".as_ref().to_bytes();
-        conn.send_data(data).await.unwrap();
+        // Generate some data
+        let data_len = rng.gen_range(0, 64);
+        let data: String = rng
+            .sample_iter(&Alphanumeric)
+            .take(data_len)
+            .collect();
+        // Send it
+        conn.send_data(data.into()).await.unwrap();
+        // Repeat after a delay
         Delay::new(Duration::from_millis(1000)).await;
     }
 }
