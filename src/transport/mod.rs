@@ -15,7 +15,14 @@ impl<T> Datagram for T where T: Encode + Decode + Send + 'static {}
 pub enum DatagramError<D> {
     Decode(D),
     Underflow,
+    Hex(hex::DecodeError),
     Split(SplitDatagramError),
+}
+
+impl<D> From<hex::DecodeError> for DatagramError<D> {
+    fn from(err: hex::DecodeError) -> Self {
+        Self::Hex(err)
+    }
 }
 
 impl<D> From<SplitDatagramError> for DatagramError<D> {

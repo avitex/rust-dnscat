@@ -15,4 +15,3 @@ dnscat2 = "0.1.0"
 
 - [ ] `Connection`
 - [ ] `ConnectionEncryption`
-- [ ] `TXT` response support.

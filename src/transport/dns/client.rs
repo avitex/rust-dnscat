@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::future::{self, BoxFuture, FutureExt};
+use log::warn;
 use tokio::net::UdpSocket;
 use tokio::runtime;
 use trust_dns_client::client::AsyncClient;
@@ -16,6 +17,7 @@ use trust_dns_proto::{
 };
 
 use crate::transport::{Datagram, DatagramError, ExchangeTransport, SplitDatagram};
+use crate::util::hex;
 
 use super::{DnsEndpoint, DnsTransportError};
 
@@ -123,7 +125,19 @@ where
                 }
                 SplitDatagram::write_iter_into(blobs, &mut bytes).map_err(DatagramError::from)?;
             }
-            RecordType::TXT => unimplemented!(),
+            RecordType::TXT => {
+                let mut txts = answers.filter_map(|d| d.into_txt().ok());
+                if let Some(txt) = txts.next() {
+                    for blob in txt.txt_data() {
+                        hex::decode_into_buf(&mut bytes, &blob[..], true)
+                            .map_err(DatagramError::from)?;
+                    }
+
+                    if txts.next().is_some() {
+                        warn!("using the first of multiple txt answers received");
+                    }
+                }
+            }
             other => panic!("unsupported record type: {:?}", other),
         }
         let mut bytes = bytes.freeze();

@@ -7,8 +7,8 @@ use dnscat2::transport::dns::*;
 
 use futures_timer::Delay;
 use log::debug;
-use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
+use rand::{thread_rng, Rng};
 
 const DNS_SERVER_PORT: u16 = 53531;
 
@@ -38,10 +38,7 @@ async fn main() {
     loop {
         // Generate some data
         let data_len = rng.gen_range(0, 64);
-        let data: String = rng
-            .sample_iter(&Alphanumeric)
-            .take(data_len)
-            .collect();
+        let data: String = rng.sample_iter(&Alphanumeric).take(data_len).collect();
         // Send it
         conn.send_data(data.into()).await.unwrap();
         // Repeat after a delay
