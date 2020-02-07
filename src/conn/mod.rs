@@ -232,7 +232,6 @@ where
             if let Some(session_frame) = session_frame_opt {
                 break session_frame;
             } else {
-                dbg!("sending empty chunk");
                 self.send_data_chunk(Bytes::new()).await?;
             }
         };
