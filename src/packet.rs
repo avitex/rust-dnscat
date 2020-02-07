@@ -206,8 +206,8 @@ pub enum PacketDecodeError {
     Hex(hex::DecodeError),
     /// UTF8 decode error.
     Utf8(Utf8Error),
-    /// Unknown packet kind.
-    UnknownKind(u8),
+    /// Unexpected packet kind.
+    UnexpectedKind(PacketKind),
     /// Unknown encryption packet kind.
     UnknownEncKind(u8),
     /// Incomplete input error.
@@ -302,7 +302,7 @@ where
             kind if kind.is_session_framed() => {
                 SessionBodyFrame::decode_kind(kind, b).map(Self::Session)
             }
-            kind => Err(PacketDecodeError::UnknownKind(kind.into())),
+            kind => Err(PacketDecodeError::UnexpectedKind(kind)),
         }
     }
 }
@@ -409,7 +409,7 @@ impl PacketBody for SupportedSessionBody {
             PacketKind::MSG => MsgBody::decode(b).map(Self::Msg),
             PacketKind::FIN => FinBody::decode(b).map(Self::Fin),
             PacketKind::ENC => EncBody::decode(b).map(Self::Enc),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }
@@ -633,7 +633,7 @@ impl PacketBody for SynBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::SYN => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }
@@ -736,7 +736,7 @@ impl PacketBody for MsgBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::MSG => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }
@@ -791,7 +791,7 @@ impl PacketBody for FinBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::FIN => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }
@@ -869,7 +869,7 @@ impl PacketBody for EncBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::ENC => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }
@@ -1035,7 +1035,7 @@ impl PacketBody for PingBody {
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match kind {
             PacketKind::PING => Self::decode(b),
-            other => Err(PacketDecodeError::UnknownKind(other.into())),
+            other => Err(PacketDecodeError::UnexpectedKind(other)),
         }
     }
 }

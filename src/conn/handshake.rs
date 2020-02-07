@@ -24,15 +24,15 @@ where
             client_syn.set_session_name(sess_name.clone());
         };
         // Send our SYN
-        conn.send_packet(client_syn).await?;
+        conn.send_session_body(client_syn).await?;
         // Recv server SYN
-        match conn.recv_packet().await {
+        match conn.recv_session_body().await {
             Ok(server_packet) => match server_packet {
                 SupportedSessionBody::Syn(server_syn) => break server_syn,
                 body => return Err(ConnectionError::Unexpected(body)),
             },
             Err(ConnectionError::Timeout) => {
-                if attempt == conn.recv_max_retry {
+                if attempt == conn.recv_retry_max {
                     return Err(ConnectionError::Timeout);
                 }
                 attempt += 1;
@@ -48,7 +48,7 @@ where
             .map(Into::into);
     }
     // Extract if the server indicates this is a command session.
-    conn.command = server_syn.is_command();
+    conn.is_command = server_syn.is_command();
     // Check the encrypted flags match.
     if conn.is_encrypted() != server_syn.is_encrypted() {
         return Err(ConnectionError::EncryptionMismatch);

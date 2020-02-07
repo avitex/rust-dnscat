@@ -9,7 +9,6 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use bytes::{Buf, Bytes, BytesMut};
 use futures::io::{self, AsyncRead, AsyncWrite};
@@ -33,9 +32,16 @@ pub enum ConnectionError<TE, EE> {
     Encryption(EE),
     LengthTooLong,
     NoDatagramBudget,
+    ReceiveBufferFull,
     PacketDecode(PacketDecodeError),
-    Unexpected(SupportedSessionBody),
+    UnexpectedPacketKind(PacketKind),
     PeerAckInvalid { expected: Sequence, got: Sequence },
+}
+
+enum ConnectionState {
+    Idle,
+    Closed,
+    SendingChunk(u16),
 }
 
 #[derive(Debug)]
@@ -44,18 +50,20 @@ where
     T: ExchangeTransport<LazyPacket>,
     E: ConnectionEncryption,
 {
+    state: ConnectionState,
     sess_id: u16,
     sess_name: Option<Cow<'static, str>>,
+    is_command: bool,
+    //close_reason: Option<StringBytes>,
     peer_seq: u16,
     self_seq: u16,
-    command: bool,
     transport: T,
     encryption: Option<E>,
     send_buffer: BytesMut,
-    recv_buffer: VecDeque<LazyPacket>,
-    recv_timeout: Duration,
-    recv_max_retry: usize,
-    send_max_retry: usize,
+    send_retry_max: usize,
+    recv_retry_max: usize,
+    recv_data_buf: VecDeque<Bytes>,
+    recv_datagram_buf: VecDeque<SupportedSessionBody>,
 }
 
 impl<T, E> Connection<T, E>
@@ -63,14 +71,29 @@ where
     T: ExchangeTransport<LazyPacket>,
     E: ConnectionEncryption,
 {
+    /// Retrieve session ID.
+    pub fn session_id(&self) -> SessionId {
+        self.sess_id
+    }
+
+    /// Retrieve session name
+    pub fn session_name(&self) -> Option<&str> {
+        self.sess_name.as_ref().map(AsRef::as_ref)
+    }
+
     /// Returns `true` if the connection is a command session.
     pub fn is_command(&self) -> bool {
-        self.command
+        self.is_command
     }
 
     /// Returns `true` if the connection is encrypted.
     pub fn is_encrypted(&self) -> bool {
         self.encryption.is_some()
+    }
+
+    /// Returns `true` if the connection is closed.
+    pub fn is_closed(&self) -> bool {
+        self.is_closed
     }
 
     /// Returns the max data chunk size that can be sent in one datagram.
@@ -116,6 +139,18 @@ where
         }
     }
 
+    fn try_push_recv_data(
+        &mut self,
+        data: Bytes,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        if self.recv_data_buf.len() == self.recv_data_buf.capacity() {
+            Err(ConnectionError::RecvDataBufFull)
+        } else {
+            self.recv_data_buf.push_front(data);
+            Ok(())
+        }
+    }
+
     fn handle_peer_msg(
         &mut self,
         peer_msg: MsgBody,
@@ -137,11 +172,18 @@ where
         let received_data_len = Self::data_len_from_usize(peer_msg.data().len())?;
         debug!(
             "data-ack: [rx: {}, tx: {}]",
-            expected_bytes_ack, received_data_len
+            received_data_len, expected_bytes_ack
         );
         self.self_seq = next_self_seq;
         self.peer_seq = self.peer_seq.wrapping_add(received_data_len);
+        self.try_push_recv_data(peer_msg.into_data())?;
         Ok(())
+    }
+
+    pub async fn recv_data(
+        &mut self,
+    ) -> Result<Option<Bytes>, ConnectionError<T::Error, E::Error>> {
+        unimplemented!()
     }
 
     pub async fn send_data(
@@ -156,20 +198,15 @@ where
             let data_chunk_len = self.calc_chunk_len(data.len())?;
             let data_chunk = data.split_to(data_chunk_len as usize);
             'send_chunk: loop {
-                self.send_data_chunk(data_chunk.clone()).await?;
-                match self.recv_packet().await? {
-                    SupportedSessionBody::Msg(peer_msg) => {
-                        match self.handle_peer_msg(peer_msg, data_chunk_len) {
-                            Ok(()) => continue 'send_main,
-                            Err(_) if data_chuck_attempt < self.send_max_retry => {
-                                debug!("send chuck failed, retrying...");
-                                data_chuck_attempt += 1;
-                                continue 'send_chunk;
-                            }
-                            Err(err) => return Err(err),
-                        }
-                    }
-                    unexpected_body => return Err(ConnectionError::Unexpected(unexpected_body)),
+                match self.send_data_chunk(data_chunk.clone()).await {
+                    Ok(()) => continue 'send_main,
+                    err @ Err(ConnectionError::ReceiveBufferFull) => return err,
+                    Err(_) if data_chuck_attempt < self.send_retry_max => {
+                        debug!("send chuck failed, retrying...");
+                        data_chuck_attempt += 1;
+                        continue 'send_chunk;
+                    },
+                    Err(err) => return Err(err),
                 }
             }
         }
@@ -187,10 +224,44 @@ where
             msg_body.ack(),
             msg_body.data()
         );
-        self.send_packet(msg_body).await
+        self.send_session_body(msg_body).await
     }
 
-    async fn send_packet<B>(&mut self, body: B) -> Result<(), ConnectionError<T::Error, E::Error>>
+    fn handle_response(
+        &mut self,
+        response: LazyPacket,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        let response_kind = response.kind();
+        if let Some(session_frame) = response.into_body().into_session_frame() {
+            if self.sess_id != session_frame.session_id() {
+                unimplemented!()
+            } else {
+                let mut body_bytes = session_frame.into_body().into_bytes();
+                let mut body_bytes = if let Some(ref mut encryption) = self.encryption {
+                    encryption.decrypt(&mut body_bytes)
+                } else {
+                    body_bytes
+                };
+                let body = SupportedSessionBody::decode_kind(response_kind, &mut body_bytes)
+                    .map_err(ConnectionError::PacketDecode)?;
+                self.handle_response_body(body)
+            }
+        } else {
+            Err(ConnectionError::UnexpectedPacketKind(response_kind))
+        }
+    }
+
+    fn handle_response_body(&mut self, body: SupportedSessionBody) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        match body {
+            SupportedSessionBody::Msg(peer_msg) => self.handle_peer_msg(peer_msg, data_chunk_len)
+        }
+        self.recv_datagram_buf.push_back(body);
+    }
+
+    async fn send_session_body<B>(
+        &mut self,
+        body: B,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>>
     where
         B: Into<SupportedSessionBody>,
     {
@@ -211,42 +282,35 @@ where
             .exchange(packet)
             .await
             .map_err(ConnectionError::Transport)?;
-        self.recv_buffer.push_back(response);
-        Ok(())
+        self.handle_response(response)
     }
 
-    async fn recv_packet(
-        &mut self,
-    ) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
-        let session_frame = loop {
-            let session_frame_opt = loop {
-                if let Some(packet) = self.recv_buffer.pop_front() {
-                    if packet.kind().is_session_framed() {
-                        break packet.into_body().into_session_frame();
-                    }
-                } else {
-                    break None;
-                }
-            };
-            if let Some(session_frame) = session_frame_opt {
-                break session_frame;
+    async fn recv_session_body<B>(&mut self) -> Result<B, ConnectionError<T::Error, E::Error>>
+    where
+        B: From<SupportedSessionBody>,
+    {
+        loop {
+            if let Some(body) = self.recv_datagram_buf.pop_front() {
+                return Ok(body.into());
             } else {
                 self.send_data_chunk(Bytes::new()).await?;
             }
-        };
-        if self.sess_id != session_frame.session_id() {
-            unimplemented!()
         }
-        let session_body = session_frame.into_body();
-        let packet_kind = session_body.packet_kind();
-        let mut session_body_bytes = session_body.into_bytes();
-        let mut session_body_bytes = if let Some(ref mut encryption) = self.encryption {
-            encryption.decrypt(&mut session_body_bytes)
+    }
+
+    fn close_if_error<RT, RE>(&mut self, result: Result<RT, RE>) -> Result<RT, RE> {
+        if result.is_err() {
+            self.is_closed = true;
+        }
+        result
+    }
+
+    fn check_open(&self) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        if self.is_closed() {
+            Err(ConnectionError::Closed)
         } else {
-            session_body_bytes
-        };
-        SupportedSessionBody::decode_kind(packet_kind, &mut session_body_bytes)
-            .map_err(ConnectionError::PacketDecode)
+            Ok(())
+        }
     }
 }
 

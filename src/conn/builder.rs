@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use bytes::BytesMut;
 
@@ -11,11 +10,12 @@ pub struct ConnectionBuilder {
     sess_id: Option<u16>,
     sess_name: Cow<'static, str>,
     init_seq: Option<u16>,
-    command: bool,
-    recv_timeout: Duration,
-    recv_max_retry: usize,
-    send_max_retry: usize,
+    is_command: bool,
     prefer_peer_name: bool,
+    send_retry_max: usize,
+    recv_retry_max: usize,
+    recv_data_buf_size: usize,
+    recv_datagram_buf_size: usize,
 }
 
 impl ConnectionBuilder {
@@ -37,8 +37,8 @@ impl ConnectionBuilder {
         self
     }
 
-    pub fn command(mut self, value: bool) -> Self {
-        self.command = value;
+    pub fn is_command(mut self, value: bool) -> Self {
+        self.is_command = value;
         self
     }
 
@@ -46,19 +46,23 @@ impl ConnectionBuilder {
         self.prefer_peer_name = value;
         self
     }
-
-    pub fn recv_max_retry(mut self, recv_max_retry: usize) -> Self {
-        self.recv_max_retry = recv_max_retry;
+    pub fn recv_data_buf_size(mut self, size: usize) -> Self {
+        self.recv_data_buf_size = size;
         self
     }
 
-    pub fn send_max_retry(mut self, send_max_retry: usize) -> Self {
-        self.send_max_retry = send_max_retry;
+    pub fn recv_datagram_buf_size(mut self, size: usize) -> Self {
+        self.recv_datagram_buf_size = size;
         self
     }
 
-    pub fn recv_timeout(mut self, recv_timeout: Duration) -> Self {
-        self.recv_timeout = recv_timeout;
+    pub fn recv_retry_max(mut self, recv_retry_max: usize) -> Self {
+        self.recv_retry_max = recv_retry_max;
+        self
+    }
+
+    pub fn send_retry_max(mut self, send_retry_max: usize) -> Self {
+        self.send_retry_max = send_retry_max;
         self
     }
 
@@ -99,22 +103,22 @@ impl ConnectionBuilder {
         } else {
             Some(self.sess_name)
         };
-        let command = self.command;
-        let peer_seq = 0;
+        let is_command = self.is_command;
         let self_seq = self.init_seq.unwrap_or_else(rand::random);
         let conn = Connection {
             sess_id,
             sess_name,
             transport,
-            peer_seq,
+            peer_seq: 0,
             self_seq,
-            command,
+            is_closed: false,
+            is_command,
             encryption,
             send_buffer: BytesMut::new(),
-            recv_buffer: VecDeque::new(),
-            recv_timeout: self.recv_timeout,
-            recv_max_retry: self.recv_max_retry,
-            send_max_retry: self.send_max_retry,
+            send_retry_max: self.send_retry_max,
+            recv_retry_max: self.recv_retry_max,
+            recv_data_buf: VecDeque::with_capacity(self.recv_data_buf_size),
+            recv_datagram_buf: VecDeque::with_capacity(self.recv_datagram_buf_size),
         };
         client_handshake(conn, self.prefer_peer_name).await
     }
@@ -126,11 +130,12 @@ impl Default for ConnectionBuilder {
             sess_id: None,
             sess_name: Cow::Borrowed(""),
             init_seq: None,
-            command: false,
-            recv_max_retry: 2,
-            send_max_retry: 2,
-            recv_timeout: Duration::from_secs(2),
             prefer_peer_name: false,
+            is_command: false,
+            send_retry_max: 2,
+            recv_retry_max: 2,
+            recv_data_buf_size: 64,
+            recv_datagram_buf_size: 2,
         }
     }
 }
