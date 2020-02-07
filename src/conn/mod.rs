@@ -219,7 +219,6 @@ where
         &mut self,
     ) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
         let session_frame = loop {
-            // Sanity check
             let session_frame_opt = loop {
                 if let Some(packet) = self.recv_buffer.pop_front() {
                     if packet.kind().is_session_framed() {
