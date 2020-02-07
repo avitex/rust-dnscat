@@ -98,6 +98,11 @@ impl NameEncoder {
         self.labeller.max_data_for_budget(self.budget)
     }
 
+    /// Returns the max length of data that can be encoded in hex.
+    pub fn max_hex_data(&self) -> u8 {
+        self.max_data() / 2
+    }
+
     /// Returns the budget available to encode data.
     pub fn budget(&self) -> u8 {
         self.budget
@@ -439,5 +444,13 @@ mod tests {
         let name_encoder = NameEncoder::new(domain_name, Labeller::default()).unwrap();
         let data = name_encoder.decode_hex(&encoded_name).unwrap();
         assert_eq!(data, &[0xDE, 0xAD, 0xBE, 0xEF][..]);
+    }
+
+    #[test]
+    fn test_name_default_max_data_calc() {
+        let domain_name = Name::from_ascii("example.com.").unwrap();
+        let name_encoder = NameEncoder::new(domain_name, Labeller::default()).unwrap();
+        assert_eq!(name_encoder.budget(), 242);
+        assert_eq!(name_encoder.max_data(), 238);
     }
 }

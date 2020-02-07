@@ -37,7 +37,7 @@ async fn main() {
 
     loop {
         // Generate some data
-        let data_len = rng.gen_range(0, 64);
+        let data_len = rng.gen_range(0, 1000);
         let data: String = rng.sample_iter(&Alphanumeric).take(data_len).collect();
         // Send it
         conn.send_data(data.into()).await.unwrap();

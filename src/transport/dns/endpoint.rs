@@ -60,7 +60,7 @@ impl BasicDnsEndpoint {
     }
 
     pub fn new_with_encoder(name_encoder: NameEncoder) -> Self {
-        let max_request_size = name_encoder.max_data() as usize;
+        let max_request_size = name_encoder.max_hex_data() as usize;
         let name_encoder = Arc::new(Mutex::new(name_encoder));
         Self {
             name_encoder,
