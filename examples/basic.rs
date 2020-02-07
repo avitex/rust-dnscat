@@ -12,7 +12,8 @@ const DNS_SERVER_PORT: u16 = 53531;
 
 #[tokio::main]
 async fn main() {
-    simple_logger::init().unwrap();
+    dotenv::dotenv().ok();
+    env_logger::init();
 
     let rt = tokio::runtime::Handle::current();
     let dns_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), DNS_SERVER_PORT);
@@ -33,6 +34,6 @@ async fn main() {
     loop {
         let data = b"hello\n".as_ref().to_bytes();
         conn.send_data(data).await.unwrap();
-        Delay::new(Duration::from_millis(10)).await;
+        Delay::new(Duration::from_millis(1000)).await;
     }
 }

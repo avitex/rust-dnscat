@@ -1,4 +1,5 @@
 mod builder;
+mod echo;
 mod handshake;
 
 pub mod enc;
@@ -10,14 +11,15 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use log::debug;
 use bytes::{Buf, Bytes, BytesMut};
 use futures::io::{self, AsyncRead, AsyncWrite};
+use log::debug;
 
 use crate::packet::*;
 use crate::transport::*;
 
 pub use self::builder::ConnectionBuilder;
+pub use self::echo::PacketEchoTransport;
 pub use self::enc::ConnectionEncryption;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -30,8 +32,10 @@ pub enum ConnectionError<TE, EE> {
     Transport(TE),
     Encryption(EE),
     LengthTooLong,
+    NoDatagramBudget,
     PacketDecode(PacketDecodeError),
     Unexpected(SupportedSessionBody),
+    PeerAckInvalid { expected: Sequence, got: Sequence },
 }
 
 #[derive(Debug)]
@@ -51,6 +55,7 @@ where
     recv_buffer: VecDeque<LazyPacket>,
     recv_timeout: Duration,
     recv_max_retry: usize,
+    send_max_retry: usize,
 }
 
 impl<T, E> Connection<T, E>
@@ -94,8 +99,13 @@ where
         }
     }
 
-    fn calc_chunk_len(&self, data_len: usize) -> u16 {
-        cmp::min(data_len, self.max_data_chunk_size() as usize) as u16
+    fn calc_chunk_len(&self, data_len: usize) -> Result<u16, ConnectionError<T::Error, E::Error>> {
+        let val = cmp::min(data_len, self.max_data_chunk_size() as usize) as u16;
+        if val == 0 {
+            Err(ConnectionError::NoDatagramBudget)
+        } else {
+            Ok(val)
+        }
     }
 
     fn data_len_from_usize(len: usize) -> Result<u16, ConnectionError<T::Error, E::Error>> {
@@ -106,27 +116,32 @@ where
         }
     }
 
-    fn peer_seq_add(&mut self, len: u16) {
-        self.peer_seq = self.peer_seq.wrapping_add(len);
-    }
-
-    fn self_seq_add(&mut self, len: u16) {
-        self.self_seq = self.self_seq.wrapping_add(len);
-    }
-
     fn handle_peer_msg(
         &mut self,
         peer_msg: MsgBody,
-    ) -> Result<u16, ConnectionError<T::Error, E::Error>> {
-        debug!("peer message: {:?}", &peer_msg);
-        let data_len = Self::data_len_from_usize(peer_msg.data().len())?;
-        if peer_msg.ack() < self.self_seq {
-            unimplemented!()
+        expected_bytes_ack: u16,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        debug!(
+            "data-rx: [seq: {}, ack: {}, data: {:?}]",
+            peer_msg.seq(),
+            peer_msg.ack(),
+            peer_msg.data()
+        );
+        let next_self_seq = self.self_seq.wrapping_add(expected_bytes_ack);
+        if peer_msg.ack() != next_self_seq {
+            return Err(ConnectionError::PeerAckInvalid {
+                expected: next_self_seq,
+                got: peer_msg.ack(),
+            });
         }
-        let bytes_acked = peer_msg.ack() - self.self_seq;
-        self.self_seq_add(bytes_acked);
-        self.peer_seq_add(data_len);
-        Ok(bytes_acked)
+        let received_data_len = Self::data_len_from_usize(peer_msg.data().len())?;
+        debug!(
+            "data-ack: [rx: {}, tx: {}]",
+            expected_bytes_ack, received_data_len
+        );
+        self.self_seq = next_self_seq;
+        self.peer_seq = self.peer_seq.wrapping_add(received_data_len);
+        Ok(())
     }
 
     pub async fn send_data(
@@ -137,16 +152,21 @@ where
             if data.is_empty() {
                 return Ok(());
             }
-            let data_chunk_len = self.calc_chunk_len(data.len());
+            let mut data_chuck_attempt = 1;
+            let data_chunk_len = self.calc_chunk_len(data.len())?;
             let data_chunk = data.split_to(data_chunk_len as usize);
             'send_chunk: loop {
                 self.send_data_chunk(data_chunk.clone()).await?;
                 match self.recv_packet().await? {
                     SupportedSessionBody::Msg(peer_msg) => {
-                        if self.handle_peer_msg(peer_msg)? == data_chunk_len {
-                            continue 'send_main;
-                        } else {
-                            continue 'send_chunk;
+                        match self.handle_peer_msg(peer_msg, data_chunk_len) {
+                            Ok(()) => continue 'send_main,
+                            Err(_) if data_chuck_attempt < self.send_max_retry => {
+                                debug!("send chuck failed, retrying...");
+                                data_chuck_attempt += 1;
+                                continue 'send_chunk;
+                            }
+                            Err(err) => return Err(err),
                         }
                     }
                     unexpected_body => return Err(ConnectionError::Unexpected(unexpected_body)),
@@ -161,6 +181,12 @@ where
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
         msg_body.set_data(data_chunk);
+        debug!(
+            "data-tx: [seq: {}, ack: {}, data: {:?}]",
+            msg_body.seq(),
+            msg_body.ack(),
+            msg_body.data()
+        );
         self.send_packet(msg_body).await
     }
 
@@ -193,6 +219,7 @@ where
         &mut self,
     ) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
         let session_frame = loop {
+            // Sanity check
             let session_frame_opt = loop {
                 if let Some(packet) = self.recv_buffer.pop_front() {
                     if packet.kind().is_session_framed() {

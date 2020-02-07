@@ -14,6 +14,7 @@ pub struct ConnectionBuilder {
     command: bool,
     recv_timeout: Duration,
     recv_max_retry: usize,
+    send_max_retry: usize,
     prefer_peer_name: bool,
 }
 
@@ -48,6 +49,11 @@ impl ConnectionBuilder {
 
     pub fn recv_max_retry(mut self, recv_max_retry: usize) -> Self {
         self.recv_max_retry = recv_max_retry;
+        self
+    }
+
+    pub fn send_max_retry(mut self, send_max_retry: usize) -> Self {
+        self.send_max_retry = send_max_retry;
         self
     }
 
@@ -108,6 +114,7 @@ impl ConnectionBuilder {
             recv_buffer: VecDeque::new(),
             recv_timeout: self.recv_timeout,
             recv_max_retry: self.recv_max_retry,
+            send_max_retry: self.send_max_retry,
         };
         client_handshake(conn, self.prefer_peer_name).await
     }
@@ -121,6 +128,7 @@ impl Default for ConnectionBuilder {
             init_seq: None,
             command: false,
             recv_max_retry: 2,
+            send_max_retry: 2,
             recv_timeout: Duration::from_secs(2),
             prefer_peer_name: false,
         }

@@ -258,6 +258,13 @@ where
         }
     }
 
+    pub fn session_body(&self) -> Option<&T> {
+        match self {
+            Self::Session(ref frame) => Some(frame.body()),
+            _ => None,
+        }
+    }
+
     pub fn session_body_mut(&mut self) -> Option<&mut T> {
         match self {
             Self::Session(ref mut frame) => Some(frame.body_mut()),
@@ -326,6 +333,10 @@ where
 
     pub fn into_body(self) -> T {
         self.body
+    }
+
+    pub fn body(&self) -> &T {
+        &self.body
     }
 
     pub fn body_mut(&mut self) -> &mut T {
@@ -438,6 +449,14 @@ impl SessionBodyBytes {
         Self { kind, body }
     }
 
+    pub fn bytes(&self) -> &Bytes {
+        &self.body
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut Bytes {
+        &mut self.body
+    }
+
     pub fn into_bytes(self) -> Bytes {
         self.body
     }
@@ -525,6 +544,16 @@ impl SynBody {
     /// Retrives the packet flags.
     pub fn flags(&self) -> PacketFlags {
         self.flags
+    }
+
+    /// Returns `true` if the `COMMAND` flag is set.
+    pub fn is_command(&self) -> bool {
+        self.flags().contains(PacketFlags::COMMAND)
+    }
+
+    /// Returns `true` if the `ENCRYPTED` flag is set.
+    pub fn is_encrypted(&self) -> bool {
+        self.flags().contains(PacketFlags::ENCRYPTED)
     }
 
     /// Retrives the session name.

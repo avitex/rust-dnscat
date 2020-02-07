@@ -48,9 +48,9 @@ where
             .map(Into::into);
     }
     // Extract if the server indicates this is a command session.
-    conn.command = server_syn.flags().contains(PacketFlags::COMMAND);
+    conn.command = server_syn.is_command();
     // Check the encrypted flags match.
-    if conn.is_encrypted() != server_syn.flags().contains(PacketFlags::ENCRYPTED) {
+    if conn.is_encrypted() != server_syn.is_encrypted() {
         return Err(ConnectionError::EncryptionMismatch);
     }
     // Extract the server initial sequence
