@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use bytes::BytesMut;
 
 use super::handshake::*;
-use super::{Connection, ConnectionEncryption, ConnectionError, ExchangeTransport, LazyPacket};
+use super::*;
 
 pub struct ConnectionBuilder {
     sess_id: Option<u16>,
@@ -104,14 +104,14 @@ impl ConnectionBuilder {
             Some(self.sess_name)
         };
         let is_command = self.is_command;
-        let self_seq = self.init_seq.unwrap_or_else(rand::random);
+        let peer_seq = Sequence(0);
+        let self_seq = Sequence(self.init_seq.unwrap_or_else(rand::random));
         let conn = Connection {
             sess_id,
             sess_name,
             transport,
-            peer_seq: 0,
+            peer_seq,
             self_seq,
-            is_closed: false,
             is_command,
             encryption,
             send_buffer: BytesMut::new(),

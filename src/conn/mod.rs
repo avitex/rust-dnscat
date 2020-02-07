@@ -16,10 +16,22 @@ use log::debug;
 
 use crate::packet::*;
 use crate::transport::*;
+use crate::util::StringBytes;
 
 pub use self::builder::ConnectionBuilder;
 pub use self::echo::PacketEchoTransport;
 pub use self::enc::ConnectionEncryption;
+
+macro_rules! debug_msg_body {
+    ($ctx:expr, $msg:expr) => {
+        debug!(
+            concat!($ctx, ": [seq: {}, ack: {}, data: {:?}]"),
+            $msg.seq().0,
+            $msg.ack().0,
+            $msg.data(),
+        );
+    };
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -27,20 +39,26 @@ pub use self::enc::ConnectionEncryption;
 pub enum ConnectionError<TE, EE> {
     Closed,
     Timeout,
-    EncryptionMismatch,
+    DataTooLong,
     Transport(TE),
     Encryption(EE),
-    LengthTooLong,
     NoDatagramBudget,
     ReceiveBufferFull,
+    EncryptionMismatch,
     PacketDecode(PacketDecodeError),
     UnexpectedPacketKind(PacketKind),
+    PeerAbort { reason: StringBytes },
     PeerAckInvalid { expected: Sequence, got: Sequence },
 }
 
+// impl<TE, EE> ConnectionError<TE, EE> {
+//     pub fn is_fatal(&self) -> bool {}
+// }
+
+#[derive(Debug)]
 enum ConnectionState {
     Idle,
-    Closed,
+    Closed { reason: Option<StringBytes> },
     SendingChunk(u16),
 }
 
@@ -54,9 +72,8 @@ where
     sess_id: u16,
     sess_name: Option<Cow<'static, str>>,
     is_command: bool,
-    //close_reason: Option<StringBytes>,
-    peer_seq: u16,
-    self_seq: u16,
+    peer_seq: Sequence,
+    self_seq: Sequence,
     transport: T,
     encryption: Option<E>,
     send_buffer: BytesMut,
@@ -93,32 +110,32 @@ where
 
     /// Returns `true` if the connection is closed.
     pub fn is_closed(&self) -> bool {
-        self.is_closed
+        unimplemented!()
     }
 
     /// Returns the max data chunk size that can be sent in one datagram.
     ///
     /// This is calculated based on the transport's indicated capability,
     /// minus the cost of the framing and/or encryption framing if enabled.
-    pub fn max_data_chunk_size(&self) -> u16 {
+    pub fn max_data_chunk_size(&self) -> u8 {
         // First calculate the total fixed size of a msg packet.
         let constant_size = Packet::<SessionBodyFrame<MsgBody>>::header_size()
             + SessionBodyFrame::<MsgBody>::header_size()
             + MsgBody::header_size();
         // If this connection is encrypted, add the additional size required.
         let constant_size = if let Some(ref encryption) = self.encryption {
-            constant_size + encryption.additional_size()
+            constant_size as usize + encryption.additional_size()
         } else {
-            constant_size
+            constant_size as usize
         };
         // Subtract the total size required from what the transport
         // can provide to get the budget we can use.
         let budget = self.transport.max_datagram_size() - constant_size;
         // Limit the budget to the max size of a sequence (u16) value.
-        if budget > Sequence::max_value() as usize {
-            u16::max_value()
+        if budget > LazyPacket::max_size() as usize {
+            u8::max_value()
         } else {
-            budget as u16
+            budget as u8
         }
     }
 
@@ -131,53 +148,40 @@ where
         }
     }
 
-    fn data_len_from_usize(len: usize) -> Result<u16, ConnectionError<T::Error, E::Error>> {
-        if len > Sequence::max_value() as usize {
-            Err(ConnectionError::LengthTooLong)
+    fn validate_chunk_len(len: usize) -> Result<u8, ConnectionError<T::Error, E::Error>> {
+        if len > LazyPacket::max_size() as usize {
+            Err(ConnectionError::DataTooLong)
         } else {
-            Ok(len as u16)
-        }
-    }
-
-    fn try_push_recv_data(
-        &mut self,
-        data: Bytes,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        if self.recv_data_buf.len() == self.recv_data_buf.capacity() {
-            Err(ConnectionError::RecvDataBufFull)
-        } else {
-            self.recv_data_buf.push_front(data);
-            Ok(())
+            Ok(len as u8)
         }
     }
 
     fn handle_peer_msg(
         &mut self,
         peer_msg: MsgBody,
-        expected_bytes_ack: u16,
+        expected_bytes_ack: u8,
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        debug!(
-            "data-rx: [seq: {}, ack: {}, data: {:?}]",
-            peer_msg.seq(),
-            peer_msg.ack(),
-            peer_msg.data()
-        );
-        let next_self_seq = self.self_seq.wrapping_add(expected_bytes_ack);
+        debug_msg_body!("data-rx", peer_msg);
+        let next_self_seq = self.self_seq.clone().add(expected_bytes_ack);
         if peer_msg.ack() != next_self_seq {
             return Err(ConnectionError::PeerAckInvalid {
                 expected: next_self_seq,
                 got: peer_msg.ack(),
             });
         }
-        let received_data_len = Self::data_len_from_usize(peer_msg.data().len())?;
+        let received_data_len = Self::validate_chunk_len(peer_msg.data().len())?;
         debug!(
             "data-ack: [rx: {}, tx: {}]",
             received_data_len, expected_bytes_ack
         );
         self.self_seq = next_self_seq;
-        self.peer_seq = self.peer_seq.wrapping_add(received_data_len);
-        self.try_push_recv_data(peer_msg.into_data())?;
-        Ok(())
+        self.peer_seq.add(received_data_len);
+        if self.recv_data_buf.len() == self.recv_data_buf.capacity() {
+            Err(ConnectionError::ReceiveBufferFull)
+        } else {
+            self.recv_data_buf.push_front(peer_msg.into_data());
+            Ok(())
+        }
     }
 
     pub async fn recv_data(
@@ -205,7 +209,7 @@ where
                         debug!("send chuck failed, retrying...");
                         data_chuck_attempt += 1;
                         continue 'send_chunk;
-                    },
+                    }
                     Err(err) => return Err(err),
                 }
             }
@@ -218,12 +222,7 @@ where
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
         msg_body.set_data(data_chunk);
-        debug!(
-            "data-tx: [seq: {}, ack: {}, data: {:?}]",
-            msg_body.seq(),
-            msg_body.ack(),
-            msg_body.data()
-        );
+        debug_msg_body!("data-tx", msg_body);
         self.send_session_body(msg_body).await
     }
 
@@ -251,11 +250,15 @@ where
         }
     }
 
-    fn handle_response_body(&mut self, body: SupportedSessionBody) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        match body {
-            SupportedSessionBody::Msg(peer_msg) => self.handle_peer_msg(peer_msg, data_chunk_len)
-        }
-        self.recv_datagram_buf.push_back(body);
+    fn handle_response_body(
+        &mut self,
+        body: SupportedSessionBody,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        // match body {
+        //     SupportedSessionBody::Msg(peer_msg) => self.handle_peer_msg(peer_msg, data_chunk_len)
+        // }
+        // self.recv_datagram_buf.push_back(body);
+        unimplemented!()
     }
 
     async fn send_session_body<B>(
@@ -274,7 +277,8 @@ where
         } else {
             self.send_buffer.to_bytes()
         };
-        let session_body = SessionBodyBytes::new(packet_kind, session_body_bytes);
+        let mut session_body = SessionBodyBytes::new(packet_kind);
+        session_body.set_bytes(session_body_bytes);
         let packet_body = SupportedBody::Session(SessionBodyFrame::new(self.sess_id, session_body));
         let packet = Packet::new(packet_id, packet_body);
         let response = self
@@ -313,6 +317,9 @@ where
         }
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////
+// Async Read + Write
 
 impl<T, E> AsyncRead for Connection<T, E>
 where

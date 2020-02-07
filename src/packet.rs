@@ -10,10 +10,19 @@ use crate::util::{hex, Decode, Encode, StringBytes};
 /// A standard supported packet with an undecoded session body.
 pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 
+/// Used to validate any part of a packet is always less than the max
+/// size. We care that the length fits within a `u8` safetly.
+macro_rules! as_valid_len {
+    ($len:expr) => {
+        assert!(($len <= LazyPacket::max_size() as usize));
+        return $len as u8;
+    };
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Packet
 
-/// `u16` packet id.
+/// Packet ID (`u16`).
 pub type PacketId = u16;
 
 /// A `DNSCAT` packet frame.
@@ -37,6 +46,11 @@ where
         self.id
     }
 
+    /// Retrives the packet kind.
+    pub fn kind(&self) -> PacketKind {
+        self.body.packet_kind()
+    }
+
     /// Retrives a reference to the packet body.
     pub fn body(&self) -> &T {
         &self.body
@@ -47,19 +61,23 @@ where
         &mut self.body
     }
 
-    /// Retrives the packet kind.
-    pub fn kind(&self) -> PacketKind {
-        self.body.packet_kind()
-    }
-
     /// Consumes self into the packet body.
     pub fn into_body(self) -> T {
         self.body
     }
 
+    /// The max size of a packet.
+    ///
+    /// # Notes
+    ///
+    /// Should only be used validating, not for allocating memory.
+    pub const fn max_size() -> u8 {
+        u8::max_value()
+    }
+
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<PacketId>() + size_of::<u8>()
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<PacketId>() + size_of::<u8>());
     }
 }
 
@@ -251,6 +269,9 @@ impl<T> SupportedBody<T>
 where
     T: PacketBody,
 {
+    /// Consumes self into the session frame.
+    ///
+    /// Returns `None` if the body is not session framed.
     pub fn into_session_frame(self) -> Option<SessionBodyFrame<T>> {
         match self {
             Self::Session(frame) => Some(frame),
@@ -258,6 +279,9 @@ where
         }
     }
 
+    /// Returns a reference to the session frame.
+    ///
+    /// Returns `None` if the body is not session framed.
     pub fn session_body(&self) -> Option<&T> {
         match self {
             Self::Session(ref frame) => Some(frame.body()),
@@ -265,6 +289,9 @@ where
         }
     }
 
+    /// Returns a mut reference to the session frame.
+    ///
+    /// Returns `None` if the body is not session framed.
     pub fn session_body_mut(&mut self) -> Option<&mut T> {
         match self {
             Self::Session(ref mut frame) => Some(frame.body_mut()),
@@ -310,9 +337,10 @@ where
 ///////////////////////////////////////////////////////////////////////////////
 // Session Packet
 
-/// `u16` session id.
+/// Session ID (`u16`).
 pub type SessionId = u16;
 
+/// Packet frame wrapping a session body with a session ID.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionBodyFrame<T> {
     id: SessionId,
@@ -323,29 +351,34 @@ impl<T> SessionBodyFrame<T>
 where
     T: PacketBody,
 {
+    /// Constructs a new session body frame given a session ID and body.
     pub fn new(id: SessionId, body: T) -> Self {
         Self { id, body }
     }
 
+    /// Returns the session ID of the frame.
     pub fn session_id(&self) -> SessionId {
         self.id
     }
 
-    pub fn into_body(self) -> T {
-        self.body
-    }
-
+    /// Returns a reference to the session body.
     pub fn body(&self) -> &T {
         &self.body
     }
 
+    /// Returns a mut reference to the session body.
     pub fn body_mut(&mut self) -> &mut T {
         &mut self.body
     }
 
+    /// Consumes self into the session body.
+    pub fn into_body(self) -> T {
+        self.body
+    }
+
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<SessionId>()
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<SessionId>());
     }
 }
 
@@ -445,16 +478,20 @@ pub struct SessionBodyBytes {
 }
 
 impl SessionBodyBytes {
-    pub fn new(kind: PacketKind, body: Bytes) -> Self {
-        Self { kind, body }
+    pub fn new(kind: PacketKind) -> Self {
+        Self {
+            kind,
+            body: Bytes::new(),
+        }
+    }
+
+    pub fn set_bytes(&mut self, body: Bytes) -> u8 {
+        self.body = body;
+        as_valid_len!(self.body.len());
     }
 
     pub fn bytes(&self) -> &Bytes {
         &self.body
-    }
-
-    pub fn bytes_mut(&mut self) -> &mut Bytes {
-        &mut self.body
     }
 
     pub fn into_bytes(self) -> Bytes {
@@ -464,7 +501,9 @@ impl SessionBodyBytes {
     fn from_packet_body<T: PacketBody>(body: T) -> Self {
         let mut body_bytes = BytesMut::new();
         body.encode(&mut body_bytes);
-        Self::new(body.packet_kind(), body_bytes.freeze())
+        let mut body = Self::new(body.packet_kind());
+        body.set_bytes(body_bytes.freeze());
+        body
     }
 }
 
@@ -480,7 +519,9 @@ impl PacketBody for SessionBodyBytes {
     }
 
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
-        Ok(Self::new(kind, b.to_bytes()))
+        let mut body = Self::new(kind);
+        body.set_bytes(b.to_bytes());
+        Ok(body)
     }
 }
 
@@ -520,7 +561,7 @@ pub struct SynBody {
 }
 
 impl SynBody {
-    /// Contructs a new `SYN` packet.
+    /// Constructs a new `SYN` packet.
     pub fn new(init_seq: Sequence, command: bool, encrypted: bool) -> Self {
         let mut flags = PacketFlags::empty();
         if command {
@@ -574,10 +615,11 @@ impl SynBody {
     ///
     /// # Panics
     ///
-    /// Panics if session name is empty.
+    /// Panics if session name length including `NULL` is zero or greater
+    /// than `Packet::max_size()`.
     ///
     /// Returns the size added to the packet.
-    pub fn set_session_name<S>(&mut self, sess_name: S) -> usize
+    pub fn set_session_name<S>(&mut self, sess_name: S) -> u8
     where
         S: Into<StringBytes>,
     {
@@ -585,18 +627,18 @@ impl SynBody {
         assert!(!sess_name.is_empty(), "session name is empty");
         self.flags.insert(PacketFlags::NAME);
         self.sess_name = sess_name;
-        self.sess_name.len() + 1
+        as_valid_len!(self.sess_name.len() + 1);
     }
 
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<Sequence>() * 2
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<Sequence>() * 2);
     }
 }
 
 impl Encode for SynBody {
     fn encode<B: BufMut>(&self, b: &mut B) {
-        b.put_u16(self.init_seq);
+        b.put_u16(self.init_seq.0);
         b.put_u16(self.flags.bits());
         if self.has_session_name() {
             b.put_slice(self.sess_name.as_bytes());
@@ -609,7 +651,7 @@ impl Decode for SynBody {
     type Error = PacketDecodeError;
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
-        let init_seq = parse::be_u16(b)?;
+        let init_seq = Sequence(parse::be_u16(b)?);
         let flags_raw = parse::be_u16(b)?;
         let flags = PacketFlags::from_bits_truncate(flags_raw);
         let sess_name = if flags.contains(PacketFlags::NAME) {
@@ -642,7 +684,32 @@ impl PacketBody for SynBody {
 // MSG Packet
 
 /// `u16` sequence value.
-pub type Sequence = u16;
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[repr(transparent)]
+pub struct Sequence(pub u16);
+
+impl Sequence {
+    pub const fn max_value() -> u16 {
+        u16::max_value()
+    }
+
+    pub fn get(self) -> u16 {
+        self.0
+    }
+
+    pub fn diff(self, other: Sequence) -> u16 {
+        if self < other {
+            (self.0 - u16::max_value()) + other.0 + 1
+        } else {
+            self.0 - other.0
+        }
+    }
+
+    pub fn add(&mut self, length: u8) -> Self {
+        self.0 = self.0.wrapping_add(length as u16);
+        *self
+    }
+}
 
 /// A `MSG` packet.
 #[derive(Debug, Clone, PartialEq)]
@@ -662,12 +729,12 @@ impl MsgBody {
         }
     }
 
-    /// Retrieves the seq number.
+    /// Returns the seq number.
     pub fn seq(&self) -> Sequence {
         self.seq
     }
 
-    /// Retrieves the ack number.
+    /// Returns the ack number.
     pub fn ack(&self) -> Sequence {
         self.ack
     }
@@ -684,15 +751,24 @@ impl MsgBody {
 
     /// Set the message data.
     ///
+    /// # Panics
+    ///
+    /// Panics if data length is greater than `Packet::max_size()`.
+    ///
     /// Returns the size added to the message.
-    pub fn set_data(&mut self, data: Bytes) -> usize {
+    pub fn set_data(&mut self, data: Bytes) -> u8 {
         self.data = data;
-        self.data.len()
+        self.data_len()
     }
 
-    /// Retrieves the message data.
+    /// Returns the message data.
     pub fn data(&self) -> &Bytes {
         &self.data
+    }
+
+    /// Returns the message data length.
+    pub fn data_len(&self) -> u8 {
+        as_valid_len!(self.data.len());
     }
 
     /// Consumes self into the message data.
@@ -701,15 +777,15 @@ impl MsgBody {
     }
 
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<Sequence>() * 2
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<Sequence>() * 2);
     }
 }
 
 impl Encode for MsgBody {
     fn encode<B: BufMut>(&self, b: &mut B) {
-        b.put_u16(self.seq);
-        b.put_u16(self.ack);
+        b.put_u16(self.seq.get());
+        b.put_u16(self.ack.get());
         b.put(self.data.clone());
     }
 }
@@ -718,13 +794,11 @@ impl Decode for MsgBody {
     type Error = PacketDecodeError;
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
-        let seq = parse::be_u16(b)?;
-        let ack = parse::be_u16(b)?;
-        Ok(Self {
-            seq,
-            ack,
-            data: b.to_bytes(),
-        })
+        let seq = Sequence(parse::be_u16(b)?);
+        let ack = Sequence(parse::be_u16(b)?);
+        let mut msg = Self::new(seq, ack);
+        msg.set_data(b.to_bytes());
+        Ok(msg)
     }
 }
 
@@ -752,18 +826,36 @@ pub struct FinBody {
 
 impl FinBody {
     /// Constructs a new `FIN` packet.
-    pub fn new<S>(reason: S) -> Self
-    where
-        S: Into<StringBytes>,
-    {
+    pub fn new() -> Self {
         Self {
-            reason: reason.into(),
+            reason: StringBytes::new(),
         }
     }
 
     /// Retrives the reason for disconnect.
     pub fn reason(&self) -> &str {
         self.reason.as_ref()
+    }
+
+    /// Consumes self into the reason for ending a session.
+    pub fn into_reason(self) -> StringBytes {
+        self.reason
+    }
+
+    /// Sets the reason for ending a session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if reason length including `NULL` is greater than `Packet::max_size()`.
+    ///
+    /// Returns the size added to the packet.
+    pub fn set_reason<S>(&mut self, reason: S) -> u8
+    where
+        S: Into<StringBytes>,
+    {
+        let reason = reason.into();
+        self.reason = reason;
+        as_valid_len!(reason.len() + 1);
     }
 }
 
@@ -779,7 +871,9 @@ impl Decode for FinBody {
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
         let reason = parse::nt_string::<PacketDecodeError>(b)?;
-        Ok(Self::new(reason))
+        let mut fin = Self::new();
+        fin.set_reason(reason);
+        Ok(fin)
     }
 }
 
@@ -799,7 +893,7 @@ impl PacketBody for FinBody {
 ///////////////////////////////////////////////////////////////////////////////
 // ENC Packet
 
-/// `u16` crypto flags.
+/// Crypto flags (`u16`).
 pub type CryptoFlags = u16;
 
 /// A `ENC` packet.
@@ -835,8 +929,8 @@ impl EncBody {
     }
 
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<CryptoFlags>() + size_of::<u8>()
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<CryptoFlags>() + size_of::<u8>());
     }
 }
 
@@ -971,7 +1065,7 @@ impl EncBodyKind {
 ///////////////////////////////////////////////////////////////////////////////
 // PING Packet
 
-/// `u16` ping id.
+/// Ping ID (`u16`).
 pub type PingId = u16;
 
 /// A `PING` packet body.
@@ -983,13 +1077,10 @@ pub struct PingBody {
 
 impl PingBody {
     /// Constructs a new `PING` packet.
-    pub fn new<S>(ping_id: PingId, data: S) -> Self
-    where
-        S: Into<StringBytes>,
-    {
+    pub fn new(ping_id: PingId) -> Self {
         Self {
             ping_id,
-            data: data.into(),
+            data: StringBytes::new(),
         }
     }
 
@@ -1003,9 +1094,17 @@ impl PingBody {
         self.data.as_ref()
     }
 
+    pub fn set_data<S>(&mut self, data: S) -> u8
+    where
+        S: Into<StringBytes>,
+    {
+        self.data = data.into();
+        as_valid_len!(self.data.len());
+    }
+
     /// Constant size of the header.
-    pub fn header_size() -> usize {
-        size_of::<PingId>()
+    pub fn header_size() -> u8 {
+        as_valid_len!(size_of::<PingId>());
     }
 }
 
@@ -1023,7 +1122,9 @@ impl Decode for PingBody {
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
         let ping_id = parse::be_u16(b)?;
         let data = parse::nt_string::<PacketDecodeError>(b)?;
-        Ok(Self::new(ping_id, data))
+        let mut ping = Self::new(ping_id);
+        ping.set_data(data);
+        Ok(ping)
     }
 }
 
@@ -1085,7 +1186,7 @@ mod tests {
                 b'h', b'e', b'l', b'l', b'o', 0x00, // Session name
             ],
             new_session_packet(1, 1, SynBody {
-                init_seq: 1,
+                init_seq: Sequence(1),
                 flags: PacketFlags::NAME,
                 sess_name: "hello".into(),
             })
@@ -1105,8 +1206,8 @@ mod tests {
                 b'h', b'e', b'l', b'l', b'o', // Data
             ],
             new_session_packet(1, 1, MsgBody {
-                seq: 2,
-                ack: 3,
+                seq: Sequence(2),
+                ack: Sequence(3),
                 data: Bytes::from_static(b"hello"),
             }),
         );

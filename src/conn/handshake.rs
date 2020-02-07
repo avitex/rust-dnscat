@@ -29,7 +29,12 @@ where
         match conn.recv_session_body().await {
             Ok(server_packet) => match server_packet {
                 SupportedSessionBody::Syn(server_syn) => break server_syn,
-                body => return Err(ConnectionError::Unexpected(body)),
+                SupportedSessionBody::Fin(server_fin) => {
+                    return Err(ConnectionError::PeerAbort {
+                        reason: server_fin.into_reason(),
+                    })
+                }
+                body => return Err(ConnectionError::UnexpectedPacketKind(body.packet_kind())),
             },
             Err(ConnectionError::Timeout) => {
                 if attempt == conn.recv_retry_max {

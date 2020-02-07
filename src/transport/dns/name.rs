@@ -70,7 +70,7 @@ pub struct NameEncoder {
 }
 
 impl NameEncoder {
-    /// Creates a new name encoder given a constant name and a labeller.
+    /// Constructs a new name encoder given a constant name and a labeller.
     ///
     /// If the constant name is a FQDN, the data will appear as subdomains and if
     /// not the data will appear as the domain name.
@@ -190,17 +190,17 @@ pub struct Labeller<R: Rng = OsRng> {
 }
 
 impl Labeller {
-    /// Creates a labeller that splits data into labels of the max size possible.
+    /// Constructs a labeller that splits data into labels of the max size possible.
     pub fn new() -> Self {
         Default::default()
     }
 
-    /// Creates a name builder that splits data into random labels sizes.
+    /// Constructs a labeller that splits data into random labels sizes.
     pub fn random() -> Self {
         Self::random_with_source(Default::default())
     }
 
-    /// Creates a name builder that splits data into labels of an max size.
+    /// Constructs a labeller that splits data into labels of a max size.
     pub fn exact(max_size: usize) -> Self {
         assert!(max_size > 1, "label size above 1");
         assert!(
@@ -218,7 +218,7 @@ impl<R> Labeller<R>
 where
     R: Rng,
 {
-    /// Creates a name builder that splits data into random labels sizes.
+    /// Constructs a labeller that splits data into random labels sizes.
     pub fn random_with_source(source: R) -> Self {
         Self {
             max_size: LABEL_MAX_SIZE as u8,
