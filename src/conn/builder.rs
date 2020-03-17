@@ -1,9 +1,6 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 
-use bytes::BytesMut;
-
-use super::handshake::*;
 use super::*;
 
 pub struct ConnectionBuilder {
@@ -15,7 +12,7 @@ pub struct ConnectionBuilder {
     send_retry_max: usize,
     recv_retry_max: usize,
     recv_data_buf_size: usize,
-    recv_datagram_buf_size: usize,
+    send_data_buf_size: usize,
 }
 
 impl ConnectionBuilder {
@@ -51,8 +48,8 @@ impl ConnectionBuilder {
         self
     }
 
-    pub fn recv_datagram_buf_size(mut self, size: usize) -> Self {
-        self.recv_datagram_buf_size = size;
+    pub fn send_data_buf_size(mut self, size: usize) -> Self {
+        self.send_data_buf_size = size;
         self
     }
 
@@ -107,6 +104,8 @@ impl ConnectionBuilder {
         let peer_seq = Sequence(0);
         let self_seq = Sequence(self.init_seq.unwrap_or_else(rand::random));
         let conn = Connection {
+            is_client: true,
+            state: ConnectionState::Uninit,
             sess_id,
             sess_name,
             transport,
@@ -114,13 +113,13 @@ impl ConnectionBuilder {
             self_seq,
             is_command,
             encryption,
-            send_buffer: BytesMut::new(),
+            prefer_peer_name: self.prefer_peer_name,
             send_retry_max: self.send_retry_max,
             recv_retry_max: self.recv_retry_max,
             recv_data_buf: VecDeque::with_capacity(self.recv_data_buf_size),
-            recv_datagram_buf: VecDeque::with_capacity(self.recv_datagram_buf_size),
+            send_data_buf: VecDeque::with_capacity(self.send_data_buf_size),
         };
-        client_handshake(conn, self.prefer_peer_name).await
+        conn.client_handshake().await
     }
 }
 
@@ -135,7 +134,7 @@ impl Default for ConnectionBuilder {
             send_retry_max: 2,
             recv_retry_max: 2,
             recv_data_buf_size: 64,
-            recv_datagram_buf_size: 2,
+            send_data_buf_size: 64,
         }
     }
 }

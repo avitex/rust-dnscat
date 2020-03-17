@@ -13,10 +13,10 @@ pub type LazyPacket = Packet<SupportedBody<SessionBodyBytes>>;
 /// Used to validate any part of a packet is always less than the max
 /// size. We care that the length fits within a `u8` safetly.
 macro_rules! as_valid_len {
-    ($len:expr) => {
+    ($len:expr) => {{
         assert!(($len <= LazyPacket::max_size() as usize));
-        return $len as u8;
-    };
+        $len as u8
+    }};
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -71,13 +71,13 @@ where
     /// # Notes
     ///
     /// Should only be used validating, not for allocating memory.
-    pub const fn max_size() -> u8 {
+    pub fn max_size() -> u8 {
         u8::max_value()
     }
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<PacketId>() + size_of::<u8>());
+        as_valid_len!(size_of::<PacketId>() + size_of::<u8>())
     }
 }
 
@@ -378,7 +378,14 @@ where
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<SessionId>());
+        as_valid_len!(size_of::<SessionId>())
+    }
+}
+
+impl SessionBodyFrame<SessionBodyBytes> {
+    /// Constructs a new session body frame given a session ID and a bytes body.
+    pub fn new_bytes(id: SessionId, kind: PacketKind, body: Bytes) -> Self {
+        Self::new(id, SessionBodyBytes::new(kind, body))
     }
 }
 
@@ -478,16 +485,9 @@ pub struct SessionBodyBytes {
 }
 
 impl SessionBodyBytes {
-    pub fn new(kind: PacketKind) -> Self {
-        Self {
-            kind,
-            body: Bytes::new(),
-        }
-    }
-
-    pub fn set_bytes(&mut self, body: Bytes) -> u8 {
-        self.body = body;
-        as_valid_len!(self.body.len());
+    pub fn new(kind: PacketKind, body: Bytes) -> Self {
+        as_valid_len!(body.len());
+        Self { kind, body }
     }
 
     pub fn bytes(&self) -> &Bytes {
@@ -501,9 +501,7 @@ impl SessionBodyBytes {
     fn from_packet_body<T: PacketBody>(body: T) -> Self {
         let mut body_bytes = BytesMut::new();
         body.encode(&mut body_bytes);
-        let mut body = Self::new(body.packet_kind());
-        body.set_bytes(body_bytes.freeze());
-        body
+        Self::new(body.packet_kind(), body_bytes.freeze())
     }
 }
 
@@ -519,32 +517,12 @@ impl PacketBody for SessionBodyBytes {
     }
 
     fn decode_kind(kind: PacketKind, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
-        let mut body = Self::new(kind);
-        body.set_bytes(b.to_bytes());
-        Ok(body)
+        Ok(Self::new(kind, b.to_bytes()))
     }
 }
 
-impl From<SynBody> for SessionBodyBytes {
-    fn from(packet: SynBody) -> Self {
-        Self::from_packet_body(packet)
-    }
-}
-
-impl From<MsgBody> for SessionBodyBytes {
-    fn from(packet: MsgBody) -> Self {
-        Self::from_packet_body(packet)
-    }
-}
-
-impl From<FinBody> for SessionBodyBytes {
-    fn from(packet: FinBody) -> Self {
-        Self::from_packet_body(packet)
-    }
-}
-
-impl From<EncBody> for SessionBodyBytes {
-    fn from(packet: EncBody) -> Self {
+impl From<SupportedSessionBody> for SessionBodyBytes {
+    fn from(packet: SupportedSessionBody) -> Self {
         Self::from_packet_body(packet)
     }
 }
@@ -562,8 +540,12 @@ pub struct SynBody {
 
 impl SynBody {
     /// Constructs a new `SYN` packet.
-    pub fn new(init_seq: Sequence, command: bool, encrypted: bool) -> Self {
+    pub fn new<S>(init_seq: S, command: bool, encrypted: bool) -> Self
+    where
+        S: Into<Sequence>,
+    {
         let mut flags = PacketFlags::empty();
+        let init_seq = init_seq.into();
         if command {
             flags.insert(PacketFlags::COMMAND);
         }
@@ -627,12 +609,12 @@ impl SynBody {
         assert!(!sess_name.is_empty(), "session name is empty");
         self.flags.insert(PacketFlags::NAME);
         self.sess_name = sess_name;
-        as_valid_len!(self.sess_name.len() + 1);
+        as_valid_len!(self.sess_name.len() + 1)
     }
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<Sequence>() * 2);
+        as_valid_len!(size_of::<Sequence>() * 2)
     }
 }
 
@@ -709,6 +691,16 @@ impl Sequence {
         self.0 = self.0.wrapping_add(length as u16);
         *self
     }
+
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+}
+
+impl From<u16> for Sequence {
+    fn from(seq: u16) -> Self {
+        Self(seq)
+    }
 }
 
 /// A `MSG` packet.
@@ -721,10 +713,13 @@ pub struct MsgBody {
 
 impl MsgBody {
     /// Constructs a new empty `MSG` packet.
-    pub fn new(seq: Sequence, ack: Sequence) -> Self {
+    pub fn new<S>(seq: S, ack: S) -> Self
+    where
+        S: Into<Sequence>,
+    {
         Self {
-            seq,
-            ack,
+            seq: seq.into(),
+            ack: ack.into(),
             data: Bytes::new(),
         }
     }
@@ -768,7 +763,7 @@ impl MsgBody {
 
     /// Returns the message data length.
     pub fn data_len(&self) -> u8 {
-        as_valid_len!(self.data.len());
+        as_valid_len!(self.data.len())
     }
 
     /// Consumes self into the message data.
@@ -778,7 +773,7 @@ impl MsgBody {
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<Sequence>() * 2);
+        as_valid_len!(size_of::<Sequence>() * 2)
     }
 }
 
@@ -855,7 +850,7 @@ impl FinBody {
     {
         let reason = reason.into();
         self.reason = reason;
-        as_valid_len!(reason.len() + 1);
+        as_valid_len!(self.reason.len() + 1)
     }
 }
 
@@ -930,7 +925,7 @@ impl EncBody {
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<CryptoFlags>() + size_of::<u8>());
+        as_valid_len!(size_of::<CryptoFlags>() + size_of::<u8>())
     }
 }
 
@@ -1099,12 +1094,12 @@ impl PingBody {
         S: Into<StringBytes>,
     {
         self.data = data.into();
-        as_valid_len!(self.data.len());
+        as_valid_len!(self.data.len())
     }
 
     /// Constant size of the header.
     pub fn header_size() -> u8 {
-        as_valid_len!(size_of::<PingId>());
+        as_valid_len!(size_of::<PingId>())
     }
 }
 

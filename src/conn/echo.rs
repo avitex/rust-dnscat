@@ -2,7 +2,9 @@ use bytes::BytesMut;
 
 use futures::future;
 
-use crate::packet::{LazyPacket, PacketBody, SessionBodyBytes, SupportedSessionBody, SynBody};
+use crate::packet::{
+    LazyPacket, PacketBody, Sequence, SessionBodyBytes, SupportedSessionBody, SynBody,
+};
 use crate::transport::{Encode, ExchangeTransport};
 
 #[derive(Debug, Clone)]
@@ -21,13 +23,14 @@ impl ExchangeTransport<LazyPacket> for PacketEchoTransport {
             let tx_body = SupportedSessionBody::decode_kind(kind, &mut body_bytes).unwrap();
             let rx_body = match tx_body {
                 SupportedSessionBody::Syn(syn) => {
-                    let syn = SynBody::new(rand::random(), syn.is_command(), syn.is_encrypted());
+                    let syn =
+                        SynBody::new(Sequence::random(), syn.is_command(), syn.is_encrypted());
                     SupportedSessionBody::Syn(syn)
                 }
                 SupportedSessionBody::Msg(mut msg) => {
-                    let data_len = msg.data().len() as u16;
-                    msg.set_ack(msg.seq().wrapping_add(data_len));
-                    msg.set_seq(msg.ack().wrapping_add(data_len));
+                    let data_len = msg.data().len() as u8;
+                    msg.set_ack(msg.seq().add(data_len));
+                    msg.set_seq(msg.ack().add(data_len));
                     SupportedSessionBody::Msg(msg)
                 }
                 other => other,
