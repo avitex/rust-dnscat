@@ -5,8 +5,8 @@ mod echo;
 pub mod enc;
 
 use std::borrow::Cow;
-use std::cmp;
 use std::collections::VecDeque;
+use std::{cmp, fmt};
 
 use bytes::{Bytes, BytesMut};
 use log::{debug, warn};
@@ -52,16 +52,32 @@ pub enum ConnectionError<TE, EE> {
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 enum ConnectionState {
     Uninit,
     EncInit,
     EncAuth,
     Handshake,
     Idle,
-    SendingChunk { len: u8 },
+    Sending { len: u8 },
     Closing,
     Closed { reason: Option<StringBytes> },
+}
+
+impl fmt::Debug for ConnectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Self::Uninit => "uninit",
+            Self::EncInit => "enc-init",
+            Self::EncAuth => "enc-auth",
+            Self::Handshake => "handshake",
+            Self::Idle => "idle",
+            Self::Sending { .. } => "sending",
+            Self::Closing => "closing",
+            Self::Closed { .. } => "closed",
+        };
+        write!(f, "{}", name)
+    }
 }
 
 impl ConnectionState {
@@ -91,6 +107,7 @@ where
     prefer_peer_name: bool,
     send_retry_max: usize,
     recv_retry_max: usize,
+    recv_data_head: 
     recv_data_buf: VecDeque<Bytes>,
     send_data_buf: VecDeque<Bytes>,
 }
@@ -164,14 +181,11 @@ where
     pub async fn recv_data(
         &mut self,
     ) -> Result<Option<Bytes>, ConnectionError<T::Error, E::Error>> {
-        unimplemented!()
-        //     loop {
-        //         if let Some(body) = self.recv_data_buf.pop_front() {
-        //             return Ok(body.into());
-        //         } else {
-        //             self.send_data_chunk(Bytes::new()).await?;
-        //         }
-        //     }
+        debug_assert_eq!(self.state, ConnectionState::Idle);
+        if self.is_client && self.recv_data_buf.is_empty() {
+            self.client_heartbeat().await?;
+        }
+        Ok(self.recv_data_buf.pop_front())
     }
 
     pub async fn send_data(
@@ -181,12 +195,13 @@ where
         debug_assert_eq!(self.state, ConnectionState::Idle);
         'send_main: loop {
             if data.is_empty() {
+                self.set_state(ConnectionState::Idle);
                 return Ok(());
             }
             let mut data_chuck_attempt = 1;
             let data_chunk_len = self.calc_chunk_len(data.len())?;
             let data_chunk = data.split_to(data_chunk_len as usize);
-            self.set_state(ConnectionState::SendingChunk {
+            self.set_state(ConnectionState::Sending {
                 len: data_chunk_len,
             });
             'send_chunk: loop {
@@ -212,7 +227,7 @@ where
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         debug_assert_eq!(
             self.state,
-            ConnectionState::SendingChunk {
+            ConnectionState::Sending {
                 len: data_chunk.len() as u8
             }
         );
@@ -278,7 +293,7 @@ where
         peer_msg: MsgBody,
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         let expected_bytes_ack = match self.state {
-            ConnectionState::SendingChunk { len } => len,
+            ConnectionState::Sending { len } => len,
             _ => 0,
         };
         debug_msg_body!("data-rx", peer_msg);
@@ -299,8 +314,9 @@ where
         if self.recv_data_buf.len() == self.recv_data_buf.capacity() {
             Err(ConnectionError::ReceiveBufferFull)
         } else {
-            self.set_state(ConnectionState::Idle);
-            self.recv_data_buf.push_front(peer_msg.into_data());
+            if received_data_len > 0 {
+                self.recv_data_buf.push_front(peer_msg.into_data());
+            }
             Ok(())
         }
     }
@@ -374,6 +390,13 @@ where
         server_syn: SynBody,
     ) -> Result<(), ConnectionError<T::Error, E::Error>> {
         self.init_from_peer_syn(&server_syn)
+    }
+
+    async fn client_heartbeat(&mut self) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        self.set_state(ConnectionState::Sending { len: 0 });
+        self.send_data_chunk(Bytes::new()).await?;
+        self.set_state(ConnectionState::Idle);
+        Ok(())
     }
 
     ///////////////////////////////////////////////////////////////////////////

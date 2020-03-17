@@ -41,6 +41,8 @@ async fn main() {
         let data: String = rng.sample_iter(&Alphanumeric).take(data_len).collect();
         // Send it
         conn.send_data(data.into()).await.unwrap();
+        // Recv any reply
+        conn.recv_data().await.unwrap();
         // Repeat after a delay
         Delay::new(Duration::from_millis(1000)).await;
     }
