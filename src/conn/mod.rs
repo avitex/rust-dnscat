@@ -107,7 +107,6 @@ where
     prefer_peer_name: bool,
     send_retry_max: usize,
     recv_retry_max: usize,
-    recv_data_head: 
     recv_data_buf: VecDeque<Bytes>,
     send_data_buf: VecDeque<Bytes>,
 }
@@ -479,11 +478,8 @@ where
     ) -> Result<SessionBodyBytes, ConnectionError<T::Error, E::Error>> {
         // Generate our packet ID.
         let tx_id = rand::random();
-        // Get the packet kind we are sending.
-        let tx_kind = tx_body.packet_kind();
         // Wrap the encoded session body in a session body frame with the session id and packet kind.
-        let session_frame =
-            SessionBodyFrame::new_bytes(self.sess_id, tx_kind, tx_body.into_bytes());
+        let session_frame = SessionBodyFrame::new(self.sess_id, tx_body);
         // Wrap the session body frame in a packet frame.
         let tx_packet = Packet::new(tx_id, SupportedBody::Session(session_frame));
         // Exchange the packet with the transport
