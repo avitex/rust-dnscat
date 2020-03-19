@@ -9,8 +9,6 @@ pub struct ConnectionBuilder {
     init_seq: Option<u16>,
     is_command: bool,
     prefer_peer_name: bool,
-    send_retry_max: usize,
-    recv_retry_max: usize,
     recv_data_buf_size: usize,
     send_data_buf_size: usize,
 }
@@ -43,26 +41,7 @@ impl ConnectionBuilder {
         self.prefer_peer_name = value;
         self
     }
-    pub fn recv_data_buf_size(mut self, size: usize) -> Self {
-        self.recv_data_buf_size = size;
-        self
-    }
-
-    pub fn send_data_buf_size(mut self, size: usize) -> Self {
-        self.send_data_buf_size = size;
-        self
-    }
-
-    pub fn recv_retry_max(mut self, recv_retry_max: usize) -> Self {
-        self.recv_retry_max = recv_retry_max;
-        self
-    }
-
-    pub fn send_retry_max(mut self, send_retry_max: usize) -> Self {
-        self.send_retry_max = send_retry_max;
-        self
-    }
-
+    
     pub async fn connect<T, E>(
         self,
         transport: T,
@@ -102,8 +81,11 @@ impl ConnectionBuilder {
         } else {
             Some(self.sess_name)
         };
+        // TODO
+        let specific = ClientServerSpecific::Client(ClientSpecific {
+            poll_interval: Duration::from_secs(5),
+        });
         let inner = ConnectionInner {
-            is_client: true,
             sess_id: self.sess_id.unwrap_or_else(rand::random),
             sess_name,
             transport,
@@ -114,11 +96,10 @@ impl ConnectionBuilder {
             send_notify_task: None,
             read_notify_task: None,
             prefer_peer_name: self.prefer_peer_name,
-            send_retry_max: self.send_retry_max,
-            recv_retry_max: self.recv_retry_max,
             recv_data_head: Bytes::new(),
             recv_data_queue: VecDeque::with_capacity(self.recv_data_buf_size),
             send_data_queue: VecDeque::with_capacity(self.send_data_buf_size),
+            specific,
         };
         let conn = Connection {
             state: ConnectionState::None,
@@ -136,8 +117,6 @@ impl Default for ConnectionBuilder {
             init_seq: None,
             prefer_peer_name: false,
             is_command: false,
-            send_retry_max: 2,
-            recv_retry_max: 2,
             recv_data_buf_size: 64,
             send_data_buf_size: 64,
         }

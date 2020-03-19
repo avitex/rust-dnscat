@@ -9,11 +9,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::{cmp, fmt};
+use std::time::Duration;
 
 use bytes::{Buf, Bytes, BytesMut};
 use futures::io::{self, AsyncRead, AsyncWrite};
 use futures::{future, ready};
 use log::debug;
+use futures_timer::Delay;
 
 use crate::packet::*;
 use crate::transport::*;
@@ -121,7 +123,7 @@ where
     }
 
     pub fn is_client(&self) -> bool {
-        self.inner.is_client
+        self.inner.specific.is_client()
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -176,7 +178,7 @@ where
             ConnectionState::SessionInit { exchange } => {
                 inner.poll_session_init_state(cx, exchange)
             }
-            ConnectionState::Ready => inner.poll_ready_state(cx),
+            ConnectionState::Idle { delay } => inner.poll_idle_state(cx, delay),
             ConnectionState::SendRecv {
                 exchange,
                 is_closing,
@@ -184,18 +186,19 @@ where
             ConnectionState::Closing => inner.poll_closing_state(cx),
             ConnectionState::Closed { .. } => panic!("polled closed connection"),
         };
-        match ready!(poll_result) {
-            Ok(ConnectionState::Ready) => {
-                self.set_state(ConnectionState::Ready);
-                self.inner.send_notify_task.take().map(Waker::wake);
-                Poll::Pending
-            }
-            Ok(next_state) => {
-                self.set_state(next_state);
-                Poll::Ready(Ok(()))
-            }
-            Err(err) => Poll::Ready(Err(err)),
-        }
+        unimplemented!()
+        // match ready!(poll_result) {
+        //     Ok(ConnectionState::Idle {}) => {
+        //         self.set_state(ConnectionState::Ready);
+        //         self.inner.send_notify_task.take().map(Waker::wake);
+        //         Poll::Pending
+        //     }
+        //     Ok(next_state) => {
+        //         self.set_state(next_state);
+        //         Poll::Ready(Ok(()))
+        //     }
+        //     Err(err) => Poll::Ready(Err(err)),
+        // }
     }
 
     fn poll_recv(
@@ -218,7 +221,7 @@ where
         buf: &[u8],
     ) -> Poll<Result<(), ConnectionError<T::Error, E::Error>>> {
         ready!(self.poll_ready(cx))?;
-        if self.state.is_ready() {
+        if self.state.is_idle() {
             let bytes = buf.to_vec().into();
             let exchange = self.inner.new_chunk_exchange(bytes)?;
             self.set_state(ConnectionState::SendRecv {
@@ -273,8 +276,8 @@ where
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        self.get_mut().poll_ready(cx).map_err(Into::into)
     }
 
     fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
@@ -313,7 +316,7 @@ enum ConnectionState<T> {
     /// Connection is initialising session.
     SessionInit { exchange: ExchangeState<T> },
     /// Connection is ready for a operation.
-    Ready,
+    Idle { delay: Delay },
     /// Connection is sending/receiving data.
     SendRecv {
         exchange: ChunkExchangeState<T>,
@@ -336,16 +339,16 @@ impl<T> ConnectionState<T> {
             Self::EncryptInit { .. } => "EncryptInit",
             Self::EncryptAuth { .. } => "EncryptAuth",
             Self::SessionInit { .. } => "SessionInit",
-            Self::Ready => "Ready",
+            Self::Idle { .. } => "Ready",
             Self::SendRecv { .. } => "SendRecv",
             Self::Closing => "Closing",
             Self::Closed { .. } => "Closed",
         }
     }
 
-    fn is_ready(&self) -> bool {
+    fn is_idle(&self) -> bool {
         match self {
-            Self::Ready => true,
+            Self::Idle { .. } => true,
             _ => false,
         }
     }
@@ -366,23 +369,74 @@ impl<T> fmt::Debug for ConnectionState<T> {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
+struct ClientSpecific {
+    /// Interval between polling the server for new messages.
+    poll_interval: Duration,
+}
+
+#[derive(Debug)]
+struct ServerSpecific {}
+
+#[derive(Debug)]
+enum ClientServerSpecific {
+    Client(ClientSpecific),
+    Server(ServerSpecific),
+}
+
+impl ClientServerSpecific {
+    fn is_client(&self) -> bool {
+        match self {
+            Self::Client(_) => true,
+            Self::Server(_) => false,
+        }
+    }
+
+    fn client(&mut self) -> Option<&mut ClientSpecific> {
+        match self {
+            Self::Client(ref mut o) => Some(o),
+            Self::Server(_) => None,
+        }
+    }
+
+    fn server(&mut self) -> Option<&mut ServerSpecific> {
+        match self {
+            Self::Client(_) => None,
+            Self::Server(ref mut o) => Some(o),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ConnectionInner<T, E> {
+    /// The session ID for this connection.
     sess_id: SessionId,
+    /// The session name if set for this connection.
     sess_name: Option<Cow<'static, str>>,
-    is_client: bool,
+    /// Whether or not this connection is a command session.
     is_command: bool,
+    /// The peer sequence for receiving data.
     peer_seq: Sequence,
+    /// This connection's sequence for sending data.
     self_seq: Sequence,
+    /// The underlying exchange transport.
     transport: T,
+    /// The connection encryption if set.
     encryption: Option<E>,
+    /// Whether on session initialization we should prefer
+    /// the peer's indicated session name if set.
     prefer_peer_name: bool,
+    /// Task waker for when we are ready to send data.
     send_notify_task: Option<Waker>,
+    /// Task waker for when data is ready to be read.
     read_notify_task: Option<Waker>,
-    send_retry_max: usize,
-    recv_retry_max: usize,
+    /// The head buffer from the queue of received chunks.
     recv_data_head: Bytes,
+    /// The queue of received chunks.
     recv_data_queue: VecDeque<Bytes>,
+    /// The queue of chucks to be sent.
     send_data_queue: VecDeque<Bytes>,
+    /// Client/Server specific state.
+    specific: ClientServerSpecific,
 }
 
 impl<T, E> ConnectionInner<T, E>
@@ -409,9 +463,9 @@ where
         // Subtract the total size required from what the transport
         // can provide to get the budget we can use.
         let budget = self.transport.max_datagram_size() - constant_size;
-        // Limit the budget to the max size of a sequence (u16) value.
+        // Limit the budget to the max size of a packet (u8).
         if budget > LazyPacket::max_size() as usize {
-            u8::max_value()
+            LazyPacket::max_size()
         } else {
             budget as u8
         }
@@ -441,6 +495,18 @@ where
     ///////////////////////////////////////////////////////////////////////////
     // State management
 
+    fn new_idle_state(&self) -> ConnectionState<T::Future> {
+        match &self.specific {
+            ClientServerSpecific::Client(client) => ConnectionState::Idle {
+                delay: Delay::new(client.poll_interval),
+            },
+            _ => unimplemented!()
+            // ClientServerSpecific::Server(server) => ConnectionState::Idle {
+            //     delay: Delay::new(server.timeout),
+            // }
+        }
+    }
+
     fn poll_encrypt_init_state(
         &mut self,
         _cx: &mut Context<'_>,
@@ -468,16 +534,16 @@ where
                 SupportedSessionBody::Syn(syn) => {
                     self.init_from_peer_syn(syn)?;
                     // Set the connection state ready to accept data
-                    Ok(ConnectionState::Ready)
+                    Ok(self.new_idle_state())
                 }
                 body => self.handle_unexpected(body),
             })
             .into()
     }
 
-    fn poll_ready_state(&mut self, _cx: &mut Context<'_>) -> StatePoll<T, E> {
+    fn poll_idle_state(&mut self, _cx: &mut Context<'_>, delay: &mut Delay) -> StatePoll<T, E> {
         // TODO: poll for data if client
-        Poll::Ready(Ok(ConnectionState::Ready))
+        Poll::Ready(Ok(self.new_idle_state()))
     }
 
     fn poll_send_recv_state(
@@ -519,7 +585,7 @@ where
                     is_closing,
                 },
                 None if is_closing => ConnectionState::Closing,
-                None => ConnectionState::Ready,
+                None => self.new_idle_state(),
             };
 
             Poll::Ready(Ok(next_state))
@@ -698,12 +764,12 @@ where
         match result {
             Ok(body) => Poll::Ready(Ok(body)),
             // TODO
-            Err(_) if exchange.attempt < self.send_retry_max && false => {
-                let tx_packet = self.build_packet(exchange.body.clone());
-                exchange.fut = self.transport.exchange(tx_packet);
-                exchange.attempt += 1;
-                Poll::Pending
-            }
+            // Err(_) if exchange.attempt < self.send_retry_max => {
+            //     let tx_packet = self.build_packet(exchange.body.clone());
+            //     exchange.fut = self.transport.exchange(tx_packet);
+            //     exchange.attempt += 1;
+            //     Poll::Pending
+            // }
             Err(err) => Poll::Ready(Err(err)),
         }
     }
