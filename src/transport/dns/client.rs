@@ -1,19 +1,23 @@
 use std::fmt;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use bytes::BytesMut;
-use futures::future::{self, BoxFuture, FutureExt};
+use bytes::{Bytes, BytesMut};
+use futures::ready;
 use log::warn;
 use tokio::net::UdpSocket;
 use tokio::runtime;
+use tokio::task::JoinHandle;
 use trust_dns_client::client::AsyncClient;
 use trust_dns_proto::{
     error::ProtoError,
     op::Query,
-    rr::{Name, Record, RecordType},
+    rr::{Record, RecordType},
     udp::{UdpClientStream, UdpResponse},
-    xfer::{DnsHandle, DnsRequestOptions},
+    xfer::{DnsHandle, DnsRequestOptions, DnsResponse},
 };
 
 use crate::transport::{Datagram, DatagramError, ExchangeTransport, SplitDatagram};
@@ -49,7 +53,11 @@ impl<E> DnsClient<AsyncClient<UdpResponse>, E>
 where
     E: DnsEndpoint,
 {
-    pub async fn connect(
+    pub async fn connect(addr: SocketAddr, endpoint: Arc<E>) -> Result<Self, ProtoError> {
+        Self::connect_with_runtime(addr, endpoint, runtime::Handle::current()).await
+    }
+
+    async fn connect_with_runtime(
         addr: SocketAddr,
         endpoint: Arc<E>,
         rt: runtime::Handle,
@@ -72,21 +80,6 @@ where
             dns_handle,
             runtime_handle,
         }
-    }
-
-    async fn lookup(
-        &mut self,
-        name: Name,
-        record_type: RecordType,
-    ) -> Result<Vec<Record>, ProtoError> {
-        let query = Query::query(name, record_type);
-        let fut = self.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
-        let mut response = self
-            .runtime_handle
-            .spawn(fut)
-            .map(|res| res.expect("failed to execute dns lookup future"))
-            .await?;
-        Ok(response.take_answers())
     }
 
     fn parse_response<D: Datagram>(
@@ -156,25 +149,16 @@ where
     E: DnsEndpoint,
     CS: Datagram<Error = SC::Error>,
     SC: Datagram,
-    SC::Error: Send,
+    SC::Error: Send + Unpin,
 {
     type Error = DnsTransportError<SC::Error>;
 
-    type Future = BoxFuture<'static, Result<SC, Self::Error>>;
+    type Future = ExchangeFuture<H, E, SC>;
 
     fn exchange(&mut self, datagram: CS) -> Self::Future {
         let mut request_data = BytesMut::new();
         datagram.encode(&mut request_data);
-        match self.endpoint.build_request(request_data.freeze()) {
-            Ok((name, record_type)) => {
-                let mut this = self.clone();
-                Box::pin(async move {
-                    let answers = this.lookup(name, record_type).await?;
-                    this.parse_response(answers, record_type)
-                })
-            }
-            Err(err) => Box::pin(future::err(DnsTransportError::Endpoint(err))),
-        }
+        ExchangeFuture::new(self, request_data.freeze())
     }
 
     fn max_datagram_size(&self) -> usize {
@@ -187,6 +171,86 @@ where
     E: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "DnsClient ( {:#?} )", self.endpoint)
+        f.debug_tuple("DnsClient").field(&self.endpoint).finish()
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+pub enum ExchangeFuture<H, E, D>
+where
+    D: Datagram,
+{
+    Future {
+        client: DnsClient<H, E>,
+        record_type: RecordType,
+        fut: JoinHandle<Result<DnsResponse, ProtoError>>,
+    },
+    Error(Option<DnsTransportError<D::Error>>),
+}
+
+impl<H, E, D> ExchangeFuture<H, E, D>
+where
+    H: DnsHandle,
+    E: DnsEndpoint,
+    D: Datagram,
+{
+    pub fn new(client: &mut DnsClient<H, E>, request_data: Bytes) -> Self {
+        match client.endpoint.build_request(request_data) {
+            Ok((name, record_type)) => {
+                let query = Query::query(name, record_type);
+                let fut = client.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
+                let fut = client.runtime_handle.spawn(fut);
+                Self::Future {
+                    client: client.clone(),
+                    record_type,
+                    fut,
+                }
+            }
+            Err(err) => Self::Error(Some(DnsTransportError::Endpoint(err))),
+        }
+    }
+}
+
+impl<H, E, D> Future for ExchangeFuture<H, E, D>
+where
+    H: DnsHandle,
+    E: DnsEndpoint,
+    D: Datagram,
+    D::Error: Unpin,
+{
+    type Output = Result<D, DnsTransportError<D::Error>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.get_mut() {
+            Self::Future {
+                fut,
+                client,
+                record_type,
+            } => {
+                let result = ready!(Pin::new(fut).poll(cx))
+                    .expect("failed to execute dns lookup future")
+                    .map_err(DnsTransportError::Proto)
+                    .and_then(|mut response| {
+                        let answers = response.take_answers();
+                        client.parse_response(answers, *record_type)
+                    });
+                Poll::Ready(result)
+            }
+            Self::Error(err_opt) => {
+                let err = err_opt.take().expect("exchange future already consumed");
+                Poll::Ready(Err(err))
+            }
+        }
+    }
+}
+
+impl<H, E, D> fmt::Debug for ExchangeFuture<H, E, D>
+where
+    E: fmt::Debug,
+    D: Datagram,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ExchangeFuture")
     }
 }

@@ -105,10 +105,10 @@ where
         let mut this = Self::with_capacity(block_count);
         // Push the head block to the datagram
         this.push_block_unchecked(T::new_head(init_seq, data.len() as u8, head_data));
-        // Split the tail data into chucks that will fit
-        let tail_chucks = tail_data.chunks(tail_data_size);
-        // For each chuck, push a tail block
-        for (seq, chunk) in Self::seq_counter(init_seq + 1).zip(tail_chucks) {
+        // Split the tail data into chunks that will fit
+        let tail_chunks = tail_data.chunks(tail_data_size);
+        // For each chunk, push a tail block
+        for (seq, chunk) in Self::seq_counter(init_seq + 1).zip(tail_chunks) {
             this.push_block_unchecked(T::new_tail(seq, chunk));
         }
         // Explictly state the blocks are sorted

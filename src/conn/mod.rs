@@ -1,4 +1,3 @@
-//mod io;
 mod builder;
 mod echo;
 
@@ -6,10 +5,15 @@ pub mod enc;
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 use std::{cmp, fmt};
 
-use bytes::{Bytes, BytesMut};
-use log::{debug, warn};
+use bytes::{Buf, Bytes, BytesMut};
+use futures::io::{self, AsyncRead, AsyncWrite};
+use futures::{future, ready};
+use log::debug;
 
 use crate::packet::*;
 use crate::transport::*;
@@ -18,6 +22,18 @@ use crate::util::StringBytes;
 pub use self::builder::ConnectionBuilder;
 pub use self::echo::PacketEchoTransport;
 pub use self::enc::ConnectionEncryption;
+
+///////////////////////////////////////////////////////////////////////////////
+
+type StatePoll<T, E> = Poll<
+    Result<
+        ConnectionState<<T as ExchangeTransport<LazyPacket>>::Future>,
+        ConnectionError<
+            <T as ExchangeTransport<LazyPacket>>::Error,
+            <E as ConnectionEncryption>::Error,
+        >,
+    >,
+>;
 
 macro_rules! debug_msg_body {
     ($ctx:expr, $msg:expr) => {
@@ -40,8 +56,9 @@ pub enum ConnectionError<TE, EE> {
     DataTooLong,
     Transport(TE),
     Encryption(EE),
+    SendBufferFull,
+    RecvBufferFull,
     NoDatagramBudget,
-    ReceiveBufferFull,
     EncryptionMismatch,
     PacketDecode(PacketDecodeError),
     UnexpectedSessionId(SessionId),
@@ -52,88 +69,47 @@ pub enum ConnectionError<TE, EE> {
     },
 }
 
-#[derive(PartialEq)]
-enum ConnectionState {
-    Uninit,
-    EncInit,
-    EncAuth,
-    Handshake,
-    Idle,
-    Sending { len: u8 },
-    Closing,
-    Closed { reason: Option<StringBytes> },
-}
-
-impl fmt::Debug for ConnectionState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Uninit => "uninit",
-            Self::EncInit => "enc-init",
-            Self::EncAuth => "enc-auth",
-            Self::Handshake => "handshake",
-            Self::Idle => "idle",
-            Self::Sending { .. } => "sending",
-            Self::Closing => "closing",
-            Self::Closed { .. } => "closed",
-        };
-        write!(f, "{}", name)
+impl<TE, EE> From<ConnectionError<TE, EE>> for std::io::Error {
+    fn from(_err: ConnectionError<TE, EE>) -> Self {
+        unimplemented!()
     }
 }
 
-impl ConnectionState {
-    fn can_encrypt(&self) -> bool {
-        match self {
-            Self::Uninit | Self::EncInit | Self::EncAuth => false,
-            _ => true,
-        }
-    }
-}
+///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct Connection<T, E = ()>
 where
     T: ExchangeTransport<LazyPacket>,
-    E: ConnectionEncryption,
 {
-    state: ConnectionState,
-    sess_id: SessionId,
-    sess_name: Option<Cow<'static, str>>,
-    is_client: bool,
-    is_command: bool,
-    peer_seq: Sequence,
-    self_seq: Sequence,
-    transport: T,
-    encryption: Option<E>,
-    prefer_peer_name: bool,
-    send_retry_max: usize,
-    recv_retry_max: usize,
-    recv_data_buf: VecDeque<Bytes>,
-    send_data_buf: VecDeque<Bytes>,
+    inner: ConnectionInner<T, E>,
+    state: ConnectionState<T::Future>,
 }
 
 impl<T, E> Connection<T, E>
 where
     T: ExchangeTransport<LazyPacket>,
+    T::Future: Unpin,
     E: ConnectionEncryption,
 {
     /// Retrieve session ID.
     pub fn session_id(&self) -> SessionId {
-        self.sess_id
+        self.inner.sess_id
     }
 
     /// Retrieve session name
     pub fn session_name(&self) -> Option<&str> {
-        self.sess_name.as_ref().map(AsRef::as_ref)
+        self.inner.sess_name.as_ref().map(AsRef::as_ref)
     }
 
     /// Returns `true` if the connection is a command session.
     pub fn is_command(&self) -> bool {
-        self.is_command
+        self.inner.is_command
     }
 
     /// Returns `true` if the connection is encrypted.
     pub fn is_encrypted(&self) -> bool {
-        self.encryption.is_some()
+        self.inner.encryption.is_some()
     }
 
     /// Returns `true` if the connection is closed.
@@ -145,9 +121,276 @@ where
     }
 
     pub fn is_client(&self) -> bool {
-        self.is_client
+        self.inner.is_client
     }
 
+    ///////////////////////////////////////////////////////////////////////////
+    // Client methods
+
+    async fn client_handshake(mut self) -> Result<Self, ConnectionError<T::Error, E::Error>> {
+        debug_assert_eq!(self.state, ConnectionState::None);
+        debug!("starting client handshake");
+        if self.is_encrypted() {
+            self = self.client_encryption_handshake().await?;
+        } else {
+            debug!("skipping encryption handshake");
+        }
+        let mut client_syn =
+            SynBody::new(self.inner.self_seq, self.is_command(), self.is_encrypted());
+        if let Some(ref sess_name) = self.inner.sess_name {
+            client_syn.set_session_name(sess_name.clone());
+        }
+        let exchange = self.inner.new_exchange(client_syn.into(), false)?;
+        self.set_state(ConnectionState::SessionInit { exchange });
+        future::poll_fn(|cx| self.poll_ready(cx)).await?;
+        Ok(self)
+    }
+
+    async fn client_encryption_handshake(
+        self,
+    ) -> Result<Self, ConnectionError<T::Error, E::Error>> {
+        unimplemented!()
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // State
+
+    fn set_state(&mut self, state: ConnectionState<T::Future>) {
+        debug!("state `{:?}` changed to `{:?}`", self.state, state);
+        self.state = state;
+    }
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), ConnectionError<T::Error, E::Error>>> {
+        let Self { inner, state } = self;
+        let poll_result = match state {
+            ConnectionState::None => unimplemented!(),
+            ConnectionState::EncryptInit { exchange } => {
+                inner.poll_encrypt_init_state(cx, exchange)
+            }
+            ConnectionState::EncryptAuth { exchange } => {
+                inner.poll_encrypt_auth_state(cx, exchange)
+            }
+            ConnectionState::SessionInit { exchange } => {
+                inner.poll_session_init_state(cx, exchange)
+            }
+            ConnectionState::Ready => inner.poll_ready_state(cx),
+            ConnectionState::SendRecv {
+                exchange,
+                is_closing,
+            } => inner.poll_send_recv_state(cx, exchange, *is_closing),
+            ConnectionState::Closing => inner.poll_closing_state(cx),
+            ConnectionState::Closed { .. } => panic!("polled closed connection"),
+        };
+        match ready!(poll_result) {
+            Ok(ConnectionState::Ready) => {
+                self.set_state(ConnectionState::Ready);
+                self.inner.send_notify_task.take().map(Waker::wake);
+                Poll::Pending
+            }
+            Ok(next_state) => {
+                self.set_state(next_state);
+                Poll::Ready(Ok(()))
+            }
+            Err(err) => Poll::Ready(Err(err)),
+        }
+    }
+
+    fn poll_recv(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Bytes, ConnectionError<T::Error, E::Error>>> {
+        match self.inner.recv_data_queue.pop_front() {
+            Some(bytes) => Poll::Ready(Ok(bytes)),
+            None => {
+                ready!(self.poll_ready(cx))?;
+                self.inner.read_notify_task = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
+    }
+
+    fn poll_send(
+        &mut self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<(), ConnectionError<T::Error, E::Error>>> {
+        ready!(self.poll_ready(cx))?;
+        if self.state.is_ready() {
+            let bytes = buf.to_vec().into();
+            let exchange = self.inner.new_chunk_exchange(bytes)?;
+            self.set_state(ConnectionState::SendRecv {
+                exchange,
+                is_closing: false,
+            });
+            self.poll_ready(cx)
+        } else {
+            self.inner.send_notify_task = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+impl<T, E> AsyncRead for Connection<T, E>
+where
+    T: ExchangeTransport<LazyPacket> + Unpin,
+    T::Future: Unpin,
+    E: ConnectionEncryption + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let this = self.get_mut();
+        if this.inner.recv_data_head.is_empty() {
+            this.inner.recv_data_head = ready!(this.poll_recv(cx))?;
+        }
+        let head = &mut this.inner.recv_data_head;
+        let len = cmp::min(buf.len(), head.len());
+        head.split_to(len).copy_to_slice(buf);
+        Poll::Ready(Ok(len))
+    }
+}
+
+impl<T, E> AsyncWrite for Connection<T, E>
+where
+    T: ExchangeTransport<LazyPacket> + Unpin,
+    T::Future: Unpin,
+    E: ConnectionEncryption + Unpin,
+{
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let this = self.get_mut();
+        ready!(this.poll_send(cx, buf))?;
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), io::Error>> {
+        unimplemented!()
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+struct ExchangeState<T> {
+    /// The transport future.
+    fut: T,
+    /// The session body of the packet being sent.
+    body: SessionBodyBytes,
+    /// The attempt of the exchange.
+    attempt: usize,
+}
+
+struct ChunkExchangeState<T> {
+    inner: ExchangeState<T>,
+    /// The remaining bytes to be sent.
+    remaining: Bytes,
+    /// The amount of bytes being sent in this chunk.
+    chunk_len: u8,
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+enum ConnectionState<T> {
+    /// Connection has no state.
+    None,
+    /// Connection is initialising encryption.
+    EncryptInit { exchange: ExchangeState<T> },
+    /// Connection is authenticating encryption.
+    EncryptAuth { exchange: ExchangeState<T> },
+    /// Connection is initialising session.
+    SessionInit { exchange: ExchangeState<T> },
+    /// Connection is ready for a operation.
+    Ready,
+    /// Connection is sending/receiving data.
+    SendRecv {
+        exchange: ChunkExchangeState<T>,
+        /// `true` if the connection is closing.
+        is_closing: bool,
+    },
+    /// Connection is closing.
+    Closing,
+    /// Connection is closed.
+    Closed {
+        /// The reason the connection was closed
+        reason: Option<StringBytes>,
+    },
+}
+
+impl<T> ConnectionState<T> {
+    fn name(&self) -> &str {
+        match self {
+            Self::None => "None",
+            Self::EncryptInit { .. } => "EncryptInit",
+            Self::EncryptAuth { .. } => "EncryptAuth",
+            Self::SessionInit { .. } => "SessionInit",
+            Self::Ready => "Ready",
+            Self::SendRecv { .. } => "SendRecv",
+            Self::Closing => "Closing",
+            Self::Closed { .. } => "Closed",
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::Ready => true,
+            _ => false,
+        }
+    }
+}
+
+impl<T> PartialEq for ConnectionState<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.name() == other.name()
+    }
+}
+
+impl<T> fmt::Debug for ConnectionState<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct ConnectionInner<T, E> {
+    sess_id: SessionId,
+    sess_name: Option<Cow<'static, str>>,
+    is_client: bool,
+    is_command: bool,
+    peer_seq: Sequence,
+    self_seq: Sequence,
+    transport: T,
+    encryption: Option<E>,
+    prefer_peer_name: bool,
+    send_notify_task: Option<Waker>,
+    read_notify_task: Option<Waker>,
+    send_retry_max: usize,
+    recv_retry_max: usize,
+    recv_data_head: Bytes,
+    recv_data_queue: VecDeque<Bytes>,
+    send_data_queue: VecDeque<Bytes>,
+}
+
+impl<T, E> ConnectionInner<T, E>
+where
+    T: ExchangeTransport<LazyPacket>,
+    T::Future: Unpin,
+    E: ConnectionEncryption,
+{
     /// Returns the max data chunk size that can be sent in one datagram.
     ///
     /// This is calculated based on the transport's indicated capability,
@@ -174,66 +417,140 @@ where
         }
     }
 
+    fn init_from_peer_syn(
+        &mut self,
+        syn: SynBody,
+    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        // Extract the peer session name if we should and can
+        if (self.sess_name.is_none() || self.prefer_peer_name) && syn.session_name().is_some() {
+            debug!("using peer session name");
+            self.sess_name = syn.session_name().map(ToString::to_string).map(Into::into);
+        }
+        // Extract if the peer indicates this is a command session
+        self.is_command = syn.is_command();
+        // Check the encrypted flags match
+        if self.encryption.is_some() != syn.is_encrypted() {
+            return Err(ConnectionError::EncryptionMismatch);
+        }
+        // Extract the peer initial sequence
+        self.peer_seq = syn.initial_sequence();
+        // Woo!
+        Ok(())
+    }
+
     ///////////////////////////////////////////////////////////////////////////
-    // Data chucking
+    // State management
 
-    pub async fn recv_data(
+    fn poll_encrypt_init_state(
         &mut self,
-    ) -> Result<Option<Bytes>, ConnectionError<T::Error, E::Error>> {
-        debug_assert_eq!(self.state, ConnectionState::Idle);
-        if self.is_client && self.recv_data_buf.is_empty() {
-            self.client_heartbeat().await?;
-        }
-        Ok(self.recv_data_buf.pop_front())
+        _cx: &mut Context<'_>,
+        _exchange: &mut ExchangeState<T::Future>,
+    ) -> StatePoll<T, E> {
+        unimplemented!()
     }
 
-    pub async fn send_data(
+    fn poll_encrypt_auth_state(
         &mut self,
-        mut data: Bytes,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        debug_assert_eq!(self.state, ConnectionState::Idle);
-        'send_main: loop {
-            if data.is_empty() {
-                self.set_state(ConnectionState::Idle);
-                return Ok(());
-            }
-            let mut data_chuck_attempt = 1;
-            let data_chunk_len = self.calc_chunk_len(data.len())?;
-            let data_chunk = data.split_to(data_chunk_len as usize);
-            self.set_state(ConnectionState::Sending {
-                len: data_chunk_len,
-            });
-            'send_chunk: loop {
-                // TODO: refactor error handling.
-                match self.send_data_chunk(data_chunk.clone()).await {
-                    Ok(()) => continue 'send_main,
-                    err @ Err(ConnectionError::ReceiveBufferFull)
-                    | err @ Err(ConnectionError::Timeout) => return err,
-                    Err(_) if data_chuck_attempt < self.send_retry_max => {
-                        debug!("send chuck failed, retrying...");
-                        data_chuck_attempt += 1;
-                        continue 'send_chunk;
-                    }
-                    Err(err) => return Err(err),
+        _cx: &mut Context<'_>,
+        _exchange: &mut ExchangeState<T::Future>,
+    ) -> StatePoll<T, E> {
+        unimplemented!()
+    }
+
+    fn poll_session_init_state(
+        &mut self,
+        cx: &mut Context<'_>,
+        exchange: &mut ExchangeState<T::Future>,
+    ) -> StatePoll<T, E> {
+        ready!(self.poll_exchange(exchange, cx))
+            .and_then(|body| self.extract_session_body(body, false))
+            .and_then(|body| match body {
+                SupportedSessionBody::Syn(syn) => {
+                    self.init_from_peer_syn(syn)?;
+                    // Set the connection state ready to accept data
+                    Ok(ConnectionState::Ready)
                 }
+                body => self.handle_unexpected(body),
+            })
+            .into()
+    }
+
+    fn poll_ready_state(&mut self, _cx: &mut Context<'_>) -> StatePoll<T, E> {
+        // TODO: poll for data if client
+        Poll::Ready(Ok(ConnectionState::Ready))
+    }
+
+    fn poll_send_recv_state(
+        &mut self,
+        cx: &mut Context<'_>,
+        exchange: &mut ChunkExchangeState<T::Future>,
+        is_closing: bool,
+    ) -> StatePoll<T, E> {
+        let body = ready!(self.poll_exchange(&mut exchange.inner, cx))
+            .and_then(|body| self.extract_session_body(body, false))?;
+
+        if let SupportedSessionBody::Msg(body) = body {
+            debug_msg_body!("data-rx", body);
+            let expected_bytes_ack = exchange.chunk_len;
+            let next_self_seq = self.self_seq.clone().add(expected_bytes_ack);
+
+            if body.ack() != next_self_seq {
+                Err(ConnectionError::UnexpectedPeerAck {
+                    expected: next_self_seq,
+                    actual: body.ack(),
+                })?;
             }
+
+            let received_data_len = Self::validate_chunk_len(body.data().len())?;
+
+            debug!(
+                "data-ack: [rx: {}, tx: {}]",
+                received_data_len, expected_bytes_ack
+            );
+
+            self.self_seq = next_self_seq;
+            self.peer_seq.add(received_data_len);
+
+            self.push_recv_data(body.into_data())?;
+
+            let next_state = match self.next_chuck_exchange(exchange)? {
+                Some(exchange) => ConnectionState::SendRecv {
+                    exchange,
+                    is_closing,
+                },
+                None if is_closing => ConnectionState::Closing,
+                None => ConnectionState::Ready,
+            };
+
+            Poll::Ready(Ok(next_state))
+        } else {
+            self.handle_unexpected(body).into()
         }
     }
 
-    async fn send_data_chunk(
+    fn poll_closing_state(&mut self, _cx: &mut Context<'_>) -> StatePoll<T, E> {
+        unimplemented!()
+    }
+
+    fn handle_unexpected(
         &mut self,
-        data_chunk: Bytes,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        debug_assert_eq!(
-            self.state,
-            ConnectionState::Sending {
-                len: data_chunk.len() as u8
-            }
-        );
-        let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
-        msg_body.set_data(data_chunk);
-        debug_msg_body!("data-tx", msg_body);
-        self.send_session_body(msg_body).await
+        _unexpected: SupportedSessionBody,
+    ) -> Result<ConnectionState<T::Future>, ConnectionError<T::Error, E::Error>> {
+        unimplemented!()
+    }
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Data chunking
+
+    fn push_recv_data(&mut self, data: Bytes) -> Result<(), ConnectionError<T::Error, E::Error>> {
+        if self.recv_data_queue.len() == self.recv_data_queue.capacity() {
+            Err(ConnectionError::RecvBufferFull)?;
+        }
+        self.read_notify_task.take().map(Waker::wake);
+        if !data.is_empty() {
+            self.recv_data_queue.push_front(data);
+        }
+        Ok(())
     }
 
     fn calc_chunk_len(&self, data_len: usize) -> Result<u8, ConnectionError<T::Error, E::Error>> {
@@ -253,163 +570,45 @@ where
         }
     }
 
-    ///////////////////////////////////////////////////////////////////////////
-    // Client/Server methods
-
-    async fn send_session_body<B>(
+    fn new_chunk_exchange(
         &mut self,
-        body: B,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>>
-    where
-        B: Into<SupportedSessionBody>,
-    {
-        use SupportedSessionBody::*;
-        match self
-            .exchange_session_body(body.into(), self.state.can_encrypt())
-            .await
-        {
-            Ok(Syn(body)) if self.is_client() => self.client_handle_server_syn(body).await,
-            Ok(Syn(body)) => self.server_handle_client_syn(body).await,
-            Ok(Fin(body)) => self.handle_peer_fin(body).await,
-            Ok(Msg(body)) => self.handle_peer_msg(body).await,
-            Ok(Enc(body)) => self.handle_peer_enc(body).await,
-            Err(err) => Err(err),
-        }
+        mut data: Bytes,
+    ) -> Result<ChunkExchangeState<T::Future>, ConnectionError<T::Error, E::Error>> {
+        let chunk_len = self.calc_chunk_len(data.len())?;
+        let chunk = data.split_to(chunk_len as usize);
+        let mut msg_body = MsgBody::new(self.self_seq, self.peer_seq);
+        msg_body.set_data(chunk);
+        debug_msg_body!("data-tx", msg_body);
+        Ok(ChunkExchangeState {
+            inner: self.new_exchange(msg_body.into(), false)?,
+            chunk_len,
+            remaining: data,
+        })
     }
 
-    async fn handle_peer_fin(
+    fn next_chuck_exchange(
         &mut self,
-        peer_fin: FinBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        self.set_state(ConnectionState::Closed {
-            reason: Some(peer_fin.into_reason()),
-        });
-        Err(ConnectionError::PeerAbort)
-    }
-
-    async fn handle_peer_msg(
-        &mut self,
-        peer_msg: MsgBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        let expected_bytes_ack = match self.state {
-            ConnectionState::Sending { len } => len,
-            _ => 0,
-        };
-        debug_msg_body!("data-rx", peer_msg);
-        let next_self_seq = self.self_seq.clone().add(expected_bytes_ack);
-        if peer_msg.ack() != next_self_seq {
-            return Err(ConnectionError::UnexpectedPeerAck {
-                expected: next_self_seq,
-                actual: peer_msg.ack(),
-            });
-        }
-        let received_data_len = Self::validate_chunk_len(peer_msg.data().len())?;
-        debug!(
-            "data-ack: [rx: {}, tx: {}]",
-            received_data_len, expected_bytes_ack
-        );
-        self.self_seq = next_self_seq;
-        self.peer_seq.add(received_data_len);
-        if self.recv_data_buf.len() == self.recv_data_buf.capacity() {
-            Err(ConnectionError::ReceiveBufferFull)
+        exchange: &mut ChunkExchangeState<T::Future>,
+    ) -> Result<Option<ChunkExchangeState<T::Future>>, ConnectionError<T::Error, E::Error>> {
+        let remaining = &mut exchange.remaining;
+        if remaining.is_empty() {
+            Ok(None)
         } else {
-            if received_data_len > 0 {
-                self.recv_data_buf.push_front(peer_msg.into_data());
-            }
-            Ok(())
+            self.new_chunk_exchange(remaining.to_bytes()).map(Some)
         }
-    }
-
-    async fn handle_peer_enc(
-        &mut self,
-        _peer_enc: EncBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        unimplemented!()
-    }
-
-    fn init_from_peer_syn(
-        &mut self,
-        syn: &SynBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        if self.state != ConnectionState::Handshake {
-            warn!("got peer syn in invalid conn state: {:?}", self.state);
-            return Err(ConnectionError::UnexpectedPacketKind(PacketKind::SYN));
-        }
-        // Extract the peer session name if we should and can
-        if (self.sess_name.is_none() || self.prefer_peer_name) && syn.session_name().is_some() {
-            debug!("using peer session name");
-            self.sess_name = syn.session_name().map(ToString::to_string).map(Into::into);
-        }
-        // Extract if the peer indicates this is a command session
-        self.is_command = syn.is_command();
-        // Check the encrypted flags match
-        if self.is_encrypted() != syn.is_encrypted() {
-            return Err(ConnectionError::EncryptionMismatch);
-        }
-        // Extract the peer initial sequence
-        self.peer_seq = syn.initial_sequence();
-        // Set the connection state ready to accept data
-        self.set_state(ConnectionState::Idle);
-        // Woo!
-        Ok(())
     }
 
     ///////////////////////////////////////////////////////////////////////////
-    // Client methods
+    // Packet helpers
 
-    async fn client_handshake(mut self) -> Result<Self, ConnectionError<T::Error, E::Error>> {
-        debug_assert_eq!(self.state, ConnectionState::Uninit);
-        debug!("starting client handshake");
-        if self.is_encrypted() {
-            self = self.client_encryption_handshake().await?;
-        } else {
-            debug!("skipping encryption handshake");
-        }
-        self.set_state(ConnectionState::Handshake);
-        let mut client_syn = SynBody::new(self.self_seq, self.is_command(), self.is_encrypted());
-        if let Some(ref sess_name) = self.sess_name {
-            client_syn.set_session_name(sess_name.clone());
-        }
-        self.send_session_body(client_syn).await?;
-        Ok(self)
+    fn build_packet(&self, tx_body: SessionBodyBytes) -> LazyPacket {
+        // Generate our packet ID.
+        let tx_id = rand::random();
+        // Wrap the encoded session body in a session body frame with the session id and packet kind.
+        let session_frame = SessionBodyFrame::new(self.sess_id, tx_body.clone());
+        // Wrap the session body frame in a packet frame.
+        Packet::new(tx_id, SupportedBody::Session(session_frame))
     }
-
-    async fn client_encryption_handshake(
-        self,
-    ) -> Result<Self, ConnectionError<T::Error, E::Error>> {
-        unimplemented!()
-        // self.set_state(ConnectionState::EncInit);
-        // // TODO: impl encryption handshake.
-        // self.set_state(ConnectionState::EncAuth);
-        // // let encryption = self.encryption.unwrap();
-    }
-
-    async fn client_handle_server_syn(
-        &mut self,
-        server_syn: SynBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        self.init_from_peer_syn(&server_syn)
-    }
-
-    async fn client_heartbeat(&mut self) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        self.set_state(ConnectionState::Sending { len: 0 });
-        self.send_data_chunk(Bytes::new()).await?;
-        self.set_state(ConnectionState::Idle);
-        Ok(())
-    }
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Server methods
-
-    async fn server_handle_client_syn(
-        &mut self,
-        client_syn: SynBody,
-    ) -> Result<(), ConnectionError<T::Error, E::Error>> {
-        self.init_from_peer_syn(&client_syn)
-    }
-
-    ///////////////////////////////////////////////////////////////////////////
-    // Session body exchange
 
     fn build_session_body(
         &mut self,
@@ -454,76 +653,58 @@ where
         Ok(rx_body)
     }
 
-    async fn exchange_session_body(
+    ///////////////////////////////////////////////////////////////////////////
+    // Transport exchange
+
+    fn new_exchange(
         &mut self,
         tx_body: SupportedSessionBody,
         plain: bool,
-    ) -> Result<SupportedSessionBody, ConnectionError<T::Error, E::Error>> {
-        let tx_body = self.build_session_body(tx_body, plain)?;
-        let mut attempt = 1;
-        loop {
-            match self.exchange_session_body_bytes(tx_body.clone()).await {
-                Ok(rx_body) => return self.extract_session_body(rx_body, plain),
-                Err(ConnectionError::Timeout) if attempt < self.recv_retry_max => {
-                    attempt += 1;
-                }
-                Err(err) => return Err(err),
+    ) -> Result<ExchangeState<T::Future>, ConnectionError<T::Error, E::Error>> {
+        self.build_session_body(tx_body, plain).map(|body| {
+            let packet = self.build_packet(body.clone());
+            ExchangeState {
+                fut: self.transport.exchange(packet),
+                body,
+                attempt: 1,
             }
-        }
+        })
     }
 
-    async fn exchange_session_body_bytes(
+    fn poll_exchange(
         &mut self,
-        tx_body: SessionBodyBytes,
-    ) -> Result<SessionBodyBytes, ConnectionError<T::Error, E::Error>> {
-        // Generate our packet ID.
-        let tx_id = rand::random();
-        // Wrap the encoded session body in a session body frame with the session id and packet kind.
-        let session_frame = SessionBodyFrame::new(self.sess_id, tx_body);
-        // Wrap the session body frame in a packet frame.
-        let tx_packet = Packet::new(tx_id, SupportedBody::Session(session_frame));
-        // Exchange the packet with the transport
-        let rx_packet = self
-            .transport
-            .exchange(tx_packet)
-            .await
-            .map_err(ConnectionError::Transport)?;
-        let rx_kind = rx_packet.kind();
-        // Consume the received packet into a session frame if applicable
-        if let Some(session_frame) = rx_packet.into_body().into_session_frame() {
-            let rx_sess_id = session_frame.session_id();
-            // Check the session ID returned matches our session ID
-            if self.sess_id != rx_sess_id {
-                Err(ConnectionError::UnexpectedSessionId(rx_sess_id))
-            } else {
-                // Return the framed session body bytes.
-                Ok(session_frame.into_body().into())
+        exchange: &mut ExchangeState<T::Future>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<SessionBodyBytes, ConnectionError<T::Error, E::Error>>> {
+        let result = ready!(Pin::new(&mut exchange.fut).poll(cx))
+            .map_err(ConnectionError::Transport)
+            .and_then(|rx_packet| {
+                let rx_kind = rx_packet.kind();
+                // Consume the received packet into a session frame if applicable
+                if let Some(session_frame) = rx_packet.into_body().into_session_frame() {
+                    let rx_sess_id = session_frame.session_id();
+                    // Check the session ID returned matches our session ID
+                    if self.sess_id != rx_sess_id {
+                        Err(ConnectionError::UnexpectedSessionId(rx_sess_id))
+                    } else {
+                        // Return the framed session body bytes.
+                        Ok(session_frame.into_body().into())
+                    }
+                } else {
+                    Err(ConnectionError::UnexpectedPacketKind(rx_kind))
+                }
+            });
+
+        match result {
+            Ok(body) => Poll::Ready(Ok(body)),
+            // TODO
+            Err(_) if exchange.attempt < self.send_retry_max && false => {
+                let tx_packet = self.build_packet(exchange.body.clone());
+                exchange.fut = self.transport.exchange(tx_packet);
+                exchange.attempt += 1;
+                Poll::Pending
             }
-        } else {
-            Err(ConnectionError::UnexpectedPacketKind(rx_kind))
+            Err(err) => Poll::Ready(Err(err)),
         }
     }
-
-    ///////////////////////////////////////////////////////////////////////////
-    // State helpers
-
-    fn set_state(&mut self, state: ConnectionState) {
-        debug!("state `{:?}` changed to `{:?}`", self.state, state);
-        self.state = state;
-    }
-
-    // fn close_if_error<RT, RE>(&mut self, result: Result<RT, RE>) -> Result<RT, RE> {
-    //     if result.is_err() {
-    //         self.is_closed = true;
-    //     }
-    //     result
-    // }
-
-    // fn check_open(&self) -> Result<(), ConnectionError<T::Error, E::Error>> {
-    //     if self.is_closed() {
-    //         Err(ConnectionError::Closed)
-    //     } else {
-    //         Ok(())
-    //     }
-    // }
 }

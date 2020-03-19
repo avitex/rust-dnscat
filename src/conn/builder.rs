@@ -70,6 +70,7 @@ impl ConnectionBuilder {
     ) -> Result<Connection<T, E>, ConnectionError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
+        T::Future: Unpin,
         E: ConnectionEncryption,
     {
         self.generic_connect(transport, Some(encryption)).await
@@ -81,6 +82,7 @@ impl ConnectionBuilder {
     ) -> Result<Connection<T>, ConnectionError<T::Error, ()>>
     where
         T: ExchangeTransport<LazyPacket>,
+        T::Future: Unpin,
     {
         self.generic_connect(transport, None).await
     }
@@ -92,32 +94,35 @@ impl ConnectionBuilder {
     ) -> Result<Connection<T, E>, ConnectionError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
+        T::Future: Unpin,
         E: ConnectionEncryption,
     {
-        let sess_id = self.sess_id.unwrap_or_else(rand::random);
         let sess_name = if self.sess_name.is_empty() {
             None
         } else {
             Some(self.sess_name)
         };
-        let is_command = self.is_command;
-        let peer_seq = Sequence(0);
-        let self_seq = Sequence(self.init_seq.unwrap_or_else(rand::random));
-        let conn = Connection {
+        let inner = ConnectionInner {
             is_client: true,
-            state: ConnectionState::Uninit,
-            sess_id,
+            sess_id: self.sess_id.unwrap_or_else(rand::random),
             sess_name,
             transport,
-            peer_seq,
-            self_seq,
-            is_command,
+            peer_seq: Sequence(0),
+            self_seq: self.init_seq.map(Sequence).unwrap_or_else(Sequence::random),
+            is_command: self.is_command,
             encryption,
+            send_notify_task: None,
+            read_notify_task: None,
             prefer_peer_name: self.prefer_peer_name,
             send_retry_max: self.send_retry_max,
             recv_retry_max: self.recv_retry_max,
-            recv_data_buf: VecDeque::with_capacity(self.recv_data_buf_size),
-            send_data_buf: VecDeque::with_capacity(self.send_data_buf_size),
+            recv_data_head: Bytes::new(),
+            recv_data_queue: VecDeque::with_capacity(self.recv_data_buf_size),
+            send_data_queue: VecDeque::with_capacity(self.send_data_buf_size),
+        };
+        let conn = Connection {
+            state: ConnectionState::None,
+            inner,
         };
         conn.client_handshake().await
     }

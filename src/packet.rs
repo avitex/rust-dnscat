@@ -194,7 +194,7 @@ bitflags! {
         const DOWNLOAD = 0b0000_1000;
         /// `OPT_CHUNKED_DOWNLOAD`
         #[deprecated]
-        const CHUCKED_DOWNLOAD = 0b0001_0000;
+        const CHUNKED_DOWNLOAD = 0b0001_0000;
         /// `OPT_COMMAND`
         ///
         /// This is a command session, and will be tunneling command messages.
