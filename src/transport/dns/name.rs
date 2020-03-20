@@ -1,6 +1,7 @@
 use std::{cmp, iter};
 
 use bytes::{Bytes, BytesMut};
+use failure::Fail;
 use rand::{rngs::OsRng, Rng};
 use trust_dns_proto::{error::ProtoError, rr::Name};
 
@@ -53,12 +54,17 @@ impl From<Name> for LowerAsciiName {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Fail)]
 pub enum NameEncoderError {
+    #[fail(display = "Data too large for name encoder")]
     DataTooLarge,
+    #[fail(display = "Constant not found in name")]
     ConstantNotFound,
+    #[fail(display = "Constant too large for name encoder")]
     ConstantTooLarge,
+    #[fail(display = "DNS Protocol error: {}", _0)]
     Proto(ProtoError),
+    #[fail(display = "Hex decode error: {}", _0)]
     Hex(hex::DecodeError),
 }
 

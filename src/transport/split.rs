@@ -2,17 +2,26 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{cmp, iter};
 
 use bytes::{BufMut, Bytes, BytesMut};
+use failure::Fail;
 
 const HEAD_HEADER_LEN: usize = 2;
 const TAIL_HEADER_LEN: usize = 1;
 
 /// Enum of all possible errors when handling split datagrams.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Fail)]
 pub enum SplitDatagramError {
+    #[fail(display = "Split datagram is empty")]
     Empty,
+    #[fail(display = "Split datagram is not sorted")]
     NotSorted,
+    #[fail(display = "Data too long for split datagram")]
     DataTooLong,
+    #[fail(display = "Missing sequence in split datagram")]
     MissingSequence(u8),
+    #[fail(
+        display = "Split datagram length out of bounds (min: {}, max: {}, len: {})",
+        min, max, len
+    )]
     LengthOutOfBounds { min: usize, max: usize, len: usize },
 }
 

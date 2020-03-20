@@ -1,8 +1,10 @@
 //#![warn(missing_docs)]
 
-pub mod conn;
+pub mod client;
+pub mod encryption;
 /// Packet support for establishing a connection in a transport.
 pub mod packet;
+pub mod session;
 pub mod transport;
 
 mod util {

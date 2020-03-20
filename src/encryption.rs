@@ -1,17 +1,21 @@
-use bytes::{Buf, Bytes};
+use std::convert::Infallible;
 
-pub trait ConnectionEncryption {
-    type Error;
+use bytes::{Buf, Bytes};
+use failure::Fail;
+
+pub trait Encryption {
+    type Error: Fail;
 
     fn encrypt<B: Buf>(&mut self, payload: &mut B) -> Bytes;
 
     fn decrypt<B: Buf>(&mut self, payload: &mut B) -> Bytes;
 
-    fn additional_size(&self) -> usize;
+    fn additional_size(&self) -> u8;
 }
 
-impl ConnectionEncryption for () {
-    type Error = ();
+impl Encryption for () {
+    // TODO: change this
+    type Error = Infallible;
 
     fn encrypt<B: Buf>(&mut self, payload: &mut B) -> Bytes {
         payload.to_bytes()
@@ -21,7 +25,7 @@ impl ConnectionEncryption for () {
         payload.to_bytes()
     }
 
-    fn additional_size(&self) -> usize {
+    fn additional_size(&self) -> u8 {
         0
     }
 }

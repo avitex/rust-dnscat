@@ -1,5 +1,6 @@
-use bytes::BytesMut;
+use std::convert::Infallible;
 
+use bytes::BytesMut;
 use futures::future;
 
 use crate::packet::{
@@ -11,9 +12,9 @@ use crate::transport::{Encode, ExchangeTransport};
 pub struct PacketEchoTransport;
 
 impl ExchangeTransport<LazyPacket> for PacketEchoTransport {
-    type Error = ();
+    type Error = Infallible;
 
-    type Future = future::Ready<Result<LazyPacket, ()>>;
+    type Future = future::Ready<Result<LazyPacket, Infallible>>;
 
     fn exchange(&mut self, mut datagram: LazyPacket) -> Self::Future {
         let kind = datagram.kind();

@@ -1,12 +1,11 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::str;
 use std::sync::Arc;
-use std::time::Duration;
 
-use dnscat2::conn::ConnectionBuilder;
+use dnscat2::client::ClientBuilder;
 use dnscat2::transport::dns::*;
 
-use futures::AsyncWriteExt;
-use futures_timer::Delay;
+use futures::{AsyncReadExt, AsyncWriteExt};
 use log::debug;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -23,7 +22,7 @@ async fn main() {
     let dns_endpoint = Arc::new(BasicDnsEndpoint::new(dns_server_name).unwrap());
     let dns_client = DnsClient::connect(dns_addr, dns_endpoint).await.unwrap();
 
-    let mut conn = ConnectionBuilder::default()
+    let mut conn = ClientBuilder::default()
         .session_name("test")
         .connect_insecure(dns_client)
         .await
@@ -35,14 +34,16 @@ async fn main() {
 
     loop {
         // Generate some data
-        let write_data_len = rng.gen_range(0, 1000);
+        let write_data_len = rng.gen_range(0, 50);
         let write_data: String = rng
             .sample_iter(&Alphanumeric)
             .take(write_data_len)
             .collect();
         // Send it
         conn.write(write_data.as_ref()).await.unwrap();
-        // Repeat after a delay
-        Delay::new(Duration::from_millis(1000)).await;
+        // Wait for a reply
+        let mut buf = [0; 16];
+        let read = conn.read(&mut buf).await.unwrap();
+        println!("received: {}", str::from_utf8(&buf[..read]).unwrap().trim());
     }
 }

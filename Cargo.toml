@@ -16,6 +16,7 @@ trust-dns-client = "~0.19"
 rand = "~0.7"
 itertools = "~0.8"
 arrayvec = "~0.5"
+failure = "~0.1"
 
 [dev-dependencies]
 dotenv = "~0.15"

@@ -2,6 +2,7 @@ use std::iter;
 
 use arrayvec::ArrayVec;
 use bytes::BufMut;
+use failure::Fail;
 use itertools::{self, Itertools};
 
 const HEX_NIBBLE_INVALID: u8 = 0xFF;
@@ -28,9 +29,11 @@ const HEX_TO_DEC_NIBBLE: &[u8] = &[
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // 128
 ];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Fail)]
 pub enum DecodeError {
+    #[fail(display = "Invalid nibble: {}", _0)]
     InvalidNibble(u8),
+    #[fail(display = "Incomplete byte")]
     IncompleteByte,
 }
 

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
+use failure::Fail;
 use trust_dns_proto::{
     error::ProtoError,
     rr::{Name, RecordType},
@@ -33,10 +34,13 @@ pub trait DnsEndpoint: Send + Sync + 'static {
     fn parse_cname_response(&self, name: Name) -> Result<Bytes, DnsEndpointError>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Fail)]
 pub enum DnsEndpointError {
+    #[fail(display = "DNS protocol error: {}", _0)]
     Proto(ProtoError),
+    #[fail(display = "{}", _0)]
     Custom(&'static str),
+    #[fail(display = "Name encoder error: {}", _0)]
     Name(NameEncoderError),
 }
 

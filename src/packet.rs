@@ -1,8 +1,10 @@
+use std::fmt;
 use std::mem::size_of;
 use std::str::{self, Utf8Error};
 
 use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use failure::Fail;
 
 use crate::util::parse::{self, Needed, NoNullTermError};
 use crate::util::{hex, Decode, Encode, StringBytes};
@@ -216,19 +218,25 @@ impl Default for PacketFlags {
 // Packet Error
 
 /// Enum of all possible errors when decoding packets.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Fail)]
 pub enum PacketDecodeError {
     /// No null term error.
+    #[fail(display = "Expected a null terminator")]
     NoNullTerm,
     /// Hex decode error.
+    #[fail(display = "Hex decode error: {}", _0)]
     Hex(hex::DecodeError),
     /// UTF8 decode error.
+    #[fail(display = "UTF-8 decode error: {}", _0)]
     Utf8(Utf8Error),
     /// Unexpected packet kind.
+    #[fail(display = "Unexpected packet kind: {:?}", _0)]
     UnexpectedKind(PacketKind),
     /// Unknown encryption packet kind.
+    #[fail(display = "Unknown encryption subtype: {}", _0)]
     UnknownEncKind(u8),
     /// Incomplete input error.
+    #[fail(display = "Unknown encryption subtype: {}", _0)]
     Incomplete(Needed),
 }
 
@@ -679,17 +687,18 @@ impl Sequence {
         self.0
     }
 
-    pub fn diff(self, other: Sequence) -> u16 {
-        if self < other {
-            (self.0 - u16::max_value()) + other.0 + 1
+    pub fn steps_to(self, next: Sequence) -> u16 {
+        // If we wrapped.
+        if self > next {
+            let steps_to_max = u16::max_value() - self.0;
+            steps_to_max + next.0 + 1
         } else {
-            self.0 - other.0
+            next.0 - self.0
         }
     }
 
-    pub fn add(&mut self, length: u8) -> Self {
-        self.0 = self.0.wrapping_add(length as u16);
-        *self
+    pub fn add(self, length: u8) -> Self {
+        Self(self.0.wrapping_add(length as u16))
     }
 
     pub fn random() -> Self {
@@ -700,6 +709,12 @@ impl Sequence {
 impl From<u16> for Sequence {
     fn from(seq: u16) -> Self {
         Self(seq)
+    }
+}
+
+impl fmt::Display for Sequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
@@ -1293,5 +1308,12 @@ mod tests {
                 }),
             },
         );
+    }
+
+    #[test]
+    fn test_sequence_diff() {
+        let prev = Sequence(u16::max_value());
+        let next = Sequence(50);
+        assert_eq!(prev.steps_to(next), 51);
     }
 }

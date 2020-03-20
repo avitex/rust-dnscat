@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes};
+use failure::Fail;
 
 /// Synchronously encode into a buffer.
 pub trait Encode {
@@ -13,7 +14,7 @@ pub trait Encode {
 /// Synchronously decode from a buffer.
 pub trait Decode: Sized {
     /// Decode error type.
-    type Error;
+    type Error: Fail;
 
     /// Decode from a `Bytes` buffer.
     ///

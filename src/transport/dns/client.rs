@@ -149,7 +149,7 @@ where
     E: DnsEndpoint,
     CS: Datagram<Error = SC::Error>,
     SC: Datagram,
-    SC::Error: Send + Unpin,
+    SC::Error: Unpin,
 {
     type Error = DnsTransportError<SC::Error>;
 

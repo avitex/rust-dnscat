@@ -2,10 +2,12 @@ use std::mem::size_of;
 use std::str::Utf8Error;
 
 use bytes::{Buf, Bytes, BytesMut};
+use failure::Fail;
 
 use crate::util::{hex, StringBytes};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Fail)]
+#[fail(display = "Needed length {}", _0)]
 pub struct Needed(pub usize);
 
 #[derive(Debug, Clone, PartialEq)]
