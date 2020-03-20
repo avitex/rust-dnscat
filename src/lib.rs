@@ -8,6 +8,8 @@
     unreachable_pub
 )]
 
+#[cfg(feature = "cli")]
+pub mod cli;
 pub mod client;
 pub mod encryption;
 /// Packet support for establishing a connection in a transport.
