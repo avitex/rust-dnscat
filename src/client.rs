@@ -311,7 +311,7 @@ where
 {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
@@ -332,23 +332,24 @@ where
 {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context,
+        cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
         self.get_mut().do_poll_send(cx, buf).map_err(Into::into)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         self.get_mut().do_poll_flush(cx).map_err(Into::into)
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         self.get_mut().do_poll_close(cx).map_err(Into::into)
     }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
+#[derive(Debug)]
 pub struct ClientBuilder {
     session_id: Option<u16>,
     session_name: Cow<'static, str>,

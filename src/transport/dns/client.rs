@@ -170,7 +170,7 @@ impl<H, E> fmt::Debug for DnsClient<H, E>
 where
     E: fmt::Debug,
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("DnsClient").field(&self.endpoint).finish()
     }
 }
@@ -250,7 +250,7 @@ where
     E: fmt::Debug,
     D: Datagram,
 {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ExchangeFuture")
     }
 }

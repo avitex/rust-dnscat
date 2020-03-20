@@ -73,7 +73,7 @@ impl BasicDnsEndpoint {
         }
     }
 
-    fn lock_name_encoder(&self) -> MutexGuard<NameEncoder> {
+    fn lock_name_encoder(&self) -> MutexGuard<'_, NameEncoder> {
         self.name_encoder
             .lock()
             .expect("name encoder lock poisoned")
