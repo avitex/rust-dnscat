@@ -46,6 +46,7 @@ impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
 struct Exchange<T> {
     inner: T,
     attempt: u8,
+    attempt_max: u8,
     backoff: Option<Delay>,
     sent_body: SessionBodyBytes,
 }
@@ -96,7 +97,7 @@ where
         &mut self,
         body: SessionBodyBytes,
     ) -> Result<(), ClientError<T::Error, E::Error>> {
-        self.start_exchange(body);
+        self.start_exchange(body, self.exchange_attempt_max);
         future::poll_fn(|cx| self.poll_exchange(cx)).await?;
         Ok(())
     }
@@ -115,6 +116,7 @@ where
             attempt,
             backoff,
             sent_body,
+            attempt_max,
         } = exchange;
 
         if let Some(ref mut backoff_fut) = backoff {
@@ -125,11 +127,18 @@ where
             *inner = self.transport.exchange(packet);
         }
 
-        let packet = match ready!(Pin::new(inner).poll(cx)) {
-            Ok(packet) => packet,
-            Err(err) if *attempt == self.exchange_attempt_max => {
-                // TODO: destroy session
-                return Poll::Ready(Err(ClientError::Transport(err)));
+        let result = match ready!(Pin::new(inner).poll(cx)) {
+            // TODO: destroy session if fatal?
+            Err(err) => Err(ClientError::Transport(err)),
+            Ok(packet) => self.session.handle_inbound(packet).map_err(Into::into),
+        };
+
+        let chunk_opt = match result {
+            Ok(chunk_opt) => chunk_opt,
+            Err(err) if *attempt == *attempt_max || self.session.is_closed() => {
+                // TODO: notify session we are dead?
+                self.exchange = None;
+                return Poll::Ready(Err(err));
             }
             Err(err) => {
                 let backoff_secs = 2u64.pow(*attempt as u32);
@@ -145,7 +154,7 @@ where
 
         self.exchange = None;
 
-        if let Some(chunk) = self.session.handle_inbound(packet)? {
+        if let Some(chunk) = chunk_opt {
             self.recv_queue_push(chunk);
             Poll::Ready(Ok(true))
         } else {
@@ -153,7 +162,7 @@ where
         }
     }
 
-    fn start_exchange(&mut self, body: SessionBodyBytes) {
+    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: u8) {
         assert!(self.exchange.is_none());
         let packet = self.session.build_packet(body.clone());
         let inner = self.transport.exchange(packet);
@@ -161,6 +170,7 @@ where
             inner,
             backoff: None,
             attempt: 1,
+            attempt_max,
             sent_body: body,
         });
     }
@@ -176,7 +186,7 @@ where
         };
         let body = self.session.build_outbound_message(chunk);
         let body = self.session.build_body(body, true)?;
-        Ok(self.start_exchange(body))
+        Ok(self.start_exchange(body, self.exchange_attempt_max))
     }
 
     fn is_recv_queue_full(&self) -> bool {
@@ -197,7 +207,7 @@ where
         self.recv_queue.push_back(chunk);
     }
 
-    fn poll_recv(
+    fn do_poll_recv(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Bytes, ClientError<T::Error, E::Error>>> {
@@ -225,12 +235,12 @@ where
             Poll::Ready(()) => {
                 self.poll_delay = None;
                 self.start_next_chunk_exchange()?;
-                self.poll_recv(cx)
+                self.do_poll_recv(cx)
             }
         }
     }
 
-    fn poll_send(
+    fn do_poll_send(
         &mut self,
         cx: &mut Context<'_>,
         buf: &[u8],
@@ -240,7 +250,7 @@ where
             return Poll::Pending;
         }
         // Flush the current send buffer out.
-        ready!(self.poll_flush(cx))?;
+        ready!(self.do_poll_flush(cx))?;
         // Push the data into the send buffer.
         self.send_buf = buf.to_vec().into();
         // Setup the exchange.
@@ -249,7 +259,7 @@ where
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(
+    fn do_poll_flush(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), ClientError<T::Error, E::Error>>> {
@@ -268,11 +278,28 @@ where
         }
     }
 
-    fn poll_close(
+    fn do_poll_close(
         &mut self,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Result<(), ClientError<T::Error, E::Error>>> {
-        unimplemented!()
+        if self.exchange.is_none() && self.session.is_closed() {
+            return Poll::Ready(Ok(()));
+        }
+        // If we get any errors while closing, just ignore them.
+        if let Err(err) = ready!(self.do_poll_flush(cx)) {
+            warn!("ignored error while closing {}", err);
+        }
+        let body = self.session.build_outbound_fin("");
+        match self.session.build_body(body, true) {
+            Ok(body) => {
+                self.start_exchange(body, 1);
+                self.poll_exchange(cx).map_ok(drop)
+            }
+            Err(err) => {
+                warn!("ignored error while closing {}", err);
+                Poll::Ready(Ok(()))
+            }
+        }
     }
 }
 
@@ -289,7 +316,7 @@ where
     ) -> Poll<Result<usize, io::Error>> {
         let this = self.get_mut();
         if this.recv_buf.is_empty() {
-            this.recv_buf = ready!(this.poll_recv(cx))?;
+            this.recv_buf = ready!(this.do_poll_recv(cx))?;
         }
         let len = cmp::min(buf.len(), this.recv_buf.len());
         this.recv_buf.split_to(len).copy_to_slice(&mut buf[..len]);
@@ -308,15 +335,15 @@ where
         cx: &mut Context,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.get_mut().poll_send(cx, buf).map_err(Into::into)
+        self.get_mut().do_poll_send(cx, buf).map_err(Into::into)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        self.get_mut().poll_flush(cx).map_err(Into::into)
+        self.get_mut().do_poll_flush(cx).map_err(Into::into)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), io::Error>> {
-        self.get_mut().poll_close(cx).map_err(Into::into)
+        self.get_mut().do_poll_close(cx).map_err(Into::into)
     }
 }
 

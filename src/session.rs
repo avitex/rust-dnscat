@@ -8,7 +8,6 @@ use log::debug;
 use crate::encryption::*;
 use crate::packet::*;
 use crate::transport::*;
-use crate::util::StringBytes;
 
 macro_rules! debug_msg_body {
     ($ctx:expr, $msg:expr) => {
@@ -99,7 +98,7 @@ pub struct Session<T> {
     /// Session stage.
     stage: SessionStage,
     /// The reason the session was closing/closed.
-    close_reason: Option<StringBytes>,
+    close_reason: Option<Cow<'static, str>>,
     /// The session encryption if set.
     encryption: Option<T>,
     /// Whether the session prefers the peer name or
@@ -158,6 +157,11 @@ where
     /// Returns the current session stage.
     pub fn stage(&self) -> SessionStage {
         self.stage
+    }
+
+    /// Returns `true` if the session is closed.
+    pub fn is_closed(&self) -> bool {
+        self.stage == SessionStage::Closed
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -222,6 +226,20 @@ where
         } else {
             Ok(Some(data))
         }
+    }
+
+    pub fn build_outbound_fin<S>(&mut self, reason: S) -> FinBody
+    where
+        S: Into<Cow<'static, str>>,
+    {
+        let reason = reason.into();
+        self.set_stage(SessionStage::Closed);
+        let mut body = FinBody::new();
+        if !reason.is_empty() {
+            body.set_reason(reason.to_string());
+            self.close_reason = Some(reason);
+        }
+        body
     }
 
     pub fn build_outbound_message(&mut self, chunk: Bytes) -> MsgBody {
