@@ -1,4 +1,12 @@
-//#![warn(missing_docs)]
+// #![doc(html_root_url = "https://docs.rs/dnscat/0.1.0")]
+// #![deny(
+//     warnings,
+//     missing_docs,
+//     missing_debug_implementations,
+//     intra_doc_link_resolution_failure,
+//     rust_2018_idioms,
+//     unreachable_pub
+// )]
 
 pub mod client;
 pub mod encryption;
@@ -16,8 +24,4 @@ mod util {
 
     pub use self::encdec::{Decode, Encode};
     pub use self::sbytes::StringBytes;
-}
-
-mod private {
-    pub trait Sealed {}
 }

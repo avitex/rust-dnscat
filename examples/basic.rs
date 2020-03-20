@@ -2,8 +2,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::str;
 use std::sync::Arc;
 
-use dnscat2::client::ClientBuilder;
-use dnscat2::transport::dns::*;
+use dnscat::client::ClientBuilder;
+use dnscat::transport::dns::*;
 
 use futures::{AsyncReadExt, AsyncWriteExt};
 use log::debug;

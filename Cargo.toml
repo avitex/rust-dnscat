@@ -1,5 +1,5 @@
 [package]
-name = "dnscat2"
+name = "dnscat"
 version = "0.1.0"
 authors = ["avitex <theavitex@gmail.com>"]
 edition = "2018"

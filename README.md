@@ -1,12 +1,12 @@
-[![Build Status](https://travis-ci.org/avitex/rust-dnscat2.svg?branch=master)](https://travis-ci.org/avitex/rust-dnscat2)
-[![Crate](https://img.shields.io/crates/v/dnscat2.svg)](https://crates.io/crates/dnscat2)
-[![Docs](https://docs.rs/dnscat2/badge.svg)](https://docs.rs/dnscat2)
+[![Build Status](https://travis-ci.org/avitex/rust-dnscat.svg?branch=master)](https://travis-ci.org/avitex/rust-dnscat)
+[![Crate](https://img.shields.io/crates/v/dnscat.svg)](https://crates.io/crates/dnscat)
+[![Docs](https://docs.rs/dnscat/badge.svg)](https://docs.rs/dnscat)
 
-# rust-dnscat2
+# rust-dnscat
 
 **Rust implementation of the DNSCAT2 protocol**  
-Documentation hosted on [docs.rs](https://docs.rs/dnscat2).
+Documentation hosted on [docs.rs](https://docs.rs/dnscat).
 
 ```toml
-dnscat2 = "0.1.0"
+dnscat = "0.1.0"
 ```
