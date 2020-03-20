@@ -165,7 +165,6 @@ where
     }
 
     ///////////////////////////////////////////////////////////////////////////
-    // State machine!
 
     pub fn handle_inbound(
         &mut self,
@@ -228,7 +227,9 @@ where
         }
     }
 
-    pub fn build_outbound_fin<S>(&mut self, reason: S) -> FinBody
+    ///////////////////////////////////////////////////////////////////////////
+
+    pub fn build_fin<S>(&mut self, reason: S) -> FinBody
     where
         S: Into<Cow<'static, str>>,
     {
@@ -242,7 +243,7 @@ where
         body
     }
 
-    pub fn build_outbound_message(&mut self, chunk: Bytes) -> MsgBody {
+    pub fn build_msg(&mut self, chunk: Bytes) -> MsgBody {
         self.assert_stage(&[SessionStage::Send]);
         let mut body = MsgBody::new(self.self_seq, self.peer_seq);
         body.set_data(chunk);
@@ -252,7 +253,7 @@ where
         body
     }
 
-    pub fn build_outbound_syn(&mut self) -> SynBody {
+    pub fn build_syn(&mut self) -> SynBody {
         self.assert_stage(&[SessionStage::Uninit, SessionStage::EncryptAuth]);
         let mut body = SynBody::new(self.self_seq, self.is_command, self.is_encrypted());
         if let Some(ref name) = self.name {
@@ -276,6 +277,8 @@ where
             );
         }
     }
+
+    ///////////////////////////////////////////////////////////////////////////
 
     fn set_pending_ack(&mut self, sent: u8) {
         self.self_seq_pending = self.self_seq.add(sent);
@@ -312,8 +315,6 @@ where
         // Woo!
         Ok(())
     }
-
-    ///////////////////////////////////////////////////////////////////////////
 
     fn init_from_peer_syn(
         &mut self,

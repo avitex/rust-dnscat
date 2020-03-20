@@ -83,7 +83,7 @@ where
         } else {
             debug!("skipping encryption handshake");
         }
-        let body = self.session.build_outbound_syn();
+        let body = self.session.build_syn();
         let body = self.session.build_body(body, true)?;
         self.basic_exchange(body).await?;
         Ok(self)
@@ -184,7 +184,7 @@ where
             let chunk_len = self.session.calc_chunk_len(self.send_buf.len(), budget);
             self.send_buf.split_to(chunk_len as usize)
         };
-        let body = self.session.build_outbound_message(chunk);
+        let body = self.session.build_msg(chunk);
         let body = self.session.build_body(body, true)?;
         Ok(self.start_exchange(body, self.exchange_attempt_max))
     }
@@ -289,7 +289,7 @@ where
         if let Err(err) = ready!(self.do_poll_flush(cx)) {
             warn!("ignored error while closing {}", err);
         }
-        let body = self.session.build_outbound_fin("");
+        let body = self.session.build_fin("");
         match self.session.build_body(body, true) {
             Ok(body) => {
                 self.start_exchange(body, 1);
