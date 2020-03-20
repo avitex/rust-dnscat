@@ -10,9 +10,9 @@ use std::{cmp, io};
 use bytes::{Buf, Bytes};
 use failure::Fail;
 use futures::io::{AsyncRead, AsyncWrite};
-use futures::ready;
+use futures::{future, ready};
 use futures_timer::Delay;
-use log::debug;
+use log::{debug, warn};
 
 use crate::encryption::Encryption;
 use crate::packet::{LazyPacket, Sequence, SessionBodyBytes};
@@ -40,6 +40,18 @@ impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+struct Exchange<T> {
+    inner: T,
+    attempt: u8,
+    backoff: Option<Delay>,
+    sent_body: SessionBodyBytes,
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Client<T, E = ()>
 where
@@ -47,8 +59,8 @@ where
 {
     transport: T,
     session: Session<E>,
-    exchange: Option<T::Future>,
-    exchange_sent: Option<SessionBodyBytes>,
+    exchange: Option<Exchange<T::Future>>,
+    exchange_attempt_max: u8,
     poll_delay: Option<Delay>,
     poll_interval: Duration,
     send_buf: Bytes,
@@ -70,9 +82,9 @@ where
         } else {
             debug!("skipping encryption handshake");
         }
-        let packet = self.session.build_outbound_syn_packet()?;
-        let response = self.exchange(packet).await?;
-        self.session.handle_inbound(response)?;
+        let body = self.session.build_outbound_syn();
+        let body = self.session.build_body(body, true)?;
+        self.basic_exchange(body).await?;
         Ok(self)
     }
 
@@ -80,14 +92,13 @@ where
         unimplemented!()
     }
 
-    async fn exchange(
+    async fn basic_exchange(
         &mut self,
-        packet: LazyPacket,
-    ) -> Result<LazyPacket, ClientError<T::Error, E::Error>> {
-        self.transport
-            .exchange(packet)
-            .await
-            .map_err(ClientError::Transport)
+        body: SessionBodyBytes,
+    ) -> Result<(), ClientError<T::Error, E::Error>> {
+        self.start_exchange(body);
+        future::poll_fn(|cx| self.poll_exchange(cx)).await?;
+        Ok(())
     }
 
     fn poll_exchange(
@@ -98,8 +109,42 @@ where
             .exchange
             .as_mut()
             .expect("attempted to poll empty exchange");
-        let packet = ready!(Pin::new(exchange).poll(cx)).map_err(ClientError::Transport)?;
+
+        let Exchange {
+            inner,
+            attempt,
+            backoff,
+            sent_body,
+        } = exchange;
+
+        if let Some(ref mut backoff_fut) = backoff {
+            ready!(Pin::new(backoff_fut).poll(cx));
+            let packet = self.session.build_packet(sent_body.clone());
+            *backoff = None;
+            *attempt += 1;
+            *inner = self.transport.exchange(packet);
+        }
+
+        let packet = match ready!(Pin::new(inner).poll(cx)) {
+            Ok(packet) => packet,
+            Err(err) if *attempt == self.exchange_attempt_max => {
+                // TODO: destroy session
+                return Poll::Ready(Err(ClientError::Transport(err)));
+            }
+            Err(err) => {
+                let backoff_secs = 2u64.pow(*attempt as u32);
+                let backoff_dur = Duration::from_secs(backoff_secs);
+                warn!(
+                    "retrying exchange after {} secs after {}",
+                    backoff_secs, err
+                );
+                *backoff = Some(Delay::new(backoff_dur));
+                return self.poll_exchange(cx);
+            }
+        };
+
         self.exchange = None;
+
         if let Some(chunk) = self.session.handle_inbound(packet)? {
             self.recv_queue_push(chunk);
             Poll::Ready(Ok(true))
@@ -110,8 +155,14 @@ where
 
     fn start_exchange(&mut self, body: SessionBodyBytes) {
         assert!(self.exchange.is_none());
-        let packet = self.session.build_packet(body);
-        self.exchange = Some(self.transport.exchange(packet));
+        let packet = self.session.build_packet(body.clone());
+        let inner = self.transport.exchange(packet);
+        self.exchange = Some(Exchange {
+            inner,
+            backoff: None,
+            attempt: 1,
+            sent_body: body,
+        });
     }
 
     fn start_next_chunk_exchange(&mut self) -> Result<(), ClientError<T::Error, E::Error>> {
@@ -274,29 +325,30 @@ where
 pub struct ClientBuilder {
     session_id: Option<u16>,
     session_name: Cow<'static, str>,
-    initial_seq: Option<u16>,
+    initial_sequence: Option<u16>,
     is_command: bool,
     poll_interval: Duration,
     prefer_peer_name: bool,
     recv_queue_size: usize,
+    exchange_attempt_max: u8,
 }
 
 impl ClientBuilder {
-    pub fn session_id(mut self, sess_id: u16) -> Self {
-        self.session_id = Some(sess_id);
+    pub fn session_id(mut self, id: u16) -> Self {
+        self.session_id = Some(id);
         self
     }
 
-    pub fn session_name<S>(mut self, sess_name: S) -> Self
+    pub fn session_name<S>(mut self, name: S) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
-        self.session_name = sess_name.into();
+        self.session_name = name.into();
         self
     }
 
-    pub fn initial_sequence(mut self, init_seq: u16) -> Self {
-        self.initial_seq = Some(init_seq);
+    pub fn initial_sequence(mut self, seq: u16) -> Self {
+        self.initial_sequence = Some(seq);
         self
     }
 
@@ -305,8 +357,24 @@ impl ClientBuilder {
         self
     }
 
+    pub fn poll_interval(mut self, interval: Duration) -> Self {
+        self.poll_interval = interval;
+        self
+    }
+
     pub fn prefer_peer_name(mut self, value: bool) -> Self {
         self.prefer_peer_name = value;
+        self
+    }
+
+    pub fn recv_queue_size(mut self, size: usize) -> Self {
+        self.recv_queue_size = size;
+        self
+    }
+
+    pub fn max_exchange_attempts(mut self, max: u8) -> Self {
+        assert_ne!(max, 0);
+        self.exchange_attempt_max = max;
         self
     }
 
@@ -351,7 +419,7 @@ impl ClientBuilder {
             Some(self.session_name)
         };
         let init_seq = self
-            .initial_seq
+            .initial_sequence
             .map(Sequence)
             .unwrap_or_else(Sequence::random);
         let session = Session::new(
@@ -368,12 +436,12 @@ impl ClientBuilder {
             transport,
             exchange: None,
             send_task: None,
-            exchange_sent: None,
             poll_delay: None,
             send_buf: Bytes::new(),
             recv_queue: VecDeque::with_capacity(self.recv_queue_size),
             recv_buf: Bytes::new(),
             poll_interval: self.poll_interval,
+            exchange_attempt_max: self.exchange_attempt_max,
         };
         client.client_handshake().await
     }
@@ -384,10 +452,11 @@ impl Default for ClientBuilder {
         Self {
             session_id: None,
             session_name: Cow::Borrowed(""),
-            initial_seq: None,
+            initial_sequence: None,
             prefer_peer_name: false,
             is_command: false,
-            recv_queue_size: 2,
+            recv_queue_size: 16,
+            exchange_attempt_max: 4,
             poll_interval: Duration::from_secs(5),
         }
     }

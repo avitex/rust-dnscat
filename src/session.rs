@@ -234,12 +234,6 @@ where
         body
     }
 
-    pub fn build_outbound_syn_packet(&mut self) -> Result<LazyPacket, SessionError<T::Error>> {
-        let body = self.build_outbound_syn();
-        let body = self.build_body(body, true)?;
-        Ok(self.build_packet(body))
-    }
-
     pub fn build_outbound_syn(&mut self) -> SynBody {
         self.assert_stage(&[SessionStage::Uninit, SessionStage::EncryptAuth]);
         let mut body = SynBody::new(self.self_seq, self.is_command, self.is_encrypted());
@@ -342,7 +336,9 @@ where
         // If encryption is enabled, decrypt our session body.
         let mut body_bytes = if encrypted {
             if let Some(ref mut encryption) = self.encryption {
-                encryption.decrypt(&mut body_bytes)
+                encryption
+                    .decrypt(&mut body_bytes)
+                    .map_err(SessionError::Encryption)?
             } else {
                 body_bytes
             }
@@ -370,7 +366,9 @@ where
         // If encryption is enabled, encrypt our session body
         let body_bytes = if encrypted {
             if let Some(ref mut encryption) = self.encryption {
-                encryption.encrypt(&mut body_bytes)
+                encryption
+                    .encrypt(&mut body_bytes)
+                    .map_err(SessionError::Encryption)?
             } else {
                 body_bytes.freeze()
             }
