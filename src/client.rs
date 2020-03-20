@@ -76,6 +76,10 @@ where
     T::Future: Unpin,
     E: Encryption,
 {
+    pub fn session(&self) -> &Session<E> {
+        &self.session
+    }
+
     async fn client_handshake(mut self) -> Result<Self, ClientError<T::Error, E::Error>> {
         debug!("starting client handshake");
         if self.session.is_encrypted() {

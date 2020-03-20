@@ -1,8 +1,12 @@
+mod client;
+
 use clap::Clap;
+
+use self::client::ClientOpts;
 
 #[derive(Clap)]
 #[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
-struct Opts {
+pub(crate) struct Opts {
     #[clap(subcommand)]
     subcmd: SubCommand,
 }
@@ -14,9 +18,6 @@ enum SubCommand {
     Client(ClientOpts),
 }
 
-#[derive(Clap)]
-struct ClientOpts {}
-
 pub async fn start() {
     dotenv::dotenv().ok();
     env_logger::init();
@@ -24,8 +25,6 @@ pub async fn start() {
     let opts = Opts::parse();
 
     match opts.subcmd {
-        SubCommand::Client(_client_opts) => {
-            unimplemented!();
-        }
+        SubCommand::Client(ref client_opts) => client::start(&opts, client_opts).await,
     }
 }
