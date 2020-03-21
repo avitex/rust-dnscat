@@ -66,7 +66,7 @@ pub(crate) struct ClientOpts {
     retransmit_backoff: bool,
 
     /// Set the shared secret used for encryption.
-    #[clap(long)]
+    #[clap(long, required_unless = "insecure")]
     secret: Option<String>,
 
     /// If set, will turn off encryption/authentication.
@@ -145,11 +145,16 @@ pub(crate) async fn start(_opts: &Opts, client_opts: &ClientOpts) {
         dns_server_addr, client_opts.domain
     );
 
-    let conn = match conn.connect_insecure(dns_client).await {
-        Ok(conn) => conn,
-        Err(err) => {
-            error!("failed to connect with {}", err);
-            return;
+    let conn = if let Some(ref _secret) = client_opts.secret {
+        unimplemented!()
+    } else {
+        assert!(client_opts.insecure);
+        match conn.connect_insecure(dns_client).await {
+            Ok(conn) => conn,
+            Err(err) => {
+                error!("failed to connect with {}", err);
+                return;
+            }
         }
     };
 
