@@ -104,6 +104,8 @@ pub struct Session<T> {
     /// Whether the session prefers the peer name or
     /// its own if it was set.
     prefer_peer_name: bool,
+    /// Whether or not packet bodies should be traced.
+    packet_trace: bool,
 }
 
 impl<T> Session<T>
@@ -118,6 +120,7 @@ where
         is_client: bool,
         encryption: Option<T>,
         prefer_peer_name: bool,
+        packet_trace: bool,
     ) -> Self {
         Self {
             id,
@@ -131,6 +134,7 @@ where
             encryption,
             stage: SessionStage::Uninit,
             prefer_peer_name,
+            packet_trace,
         }
     }
 
@@ -365,7 +369,12 @@ where
             body_bytes
         };
         // Decode the session body bytes and return.
-        B::decode_kind(kind, &mut body_bytes).map_err(SessionError::SessionBodyDecode)
+        let body =
+            B::decode_kind(kind, &mut body_bytes).map_err(SessionError::SessionBodyDecode)?;
+        if self.packet_trace {
+            debug!("body-rx: {:?}", body);
+        }
+        Ok(body)
     }
 
     pub fn build_body<B>(
@@ -377,6 +386,9 @@ where
         B: Into<SupportedSessionBody>,
     {
         let body = body.into();
+        if self.packet_trace {
+            debug!("body-tx: {:?}", body);
+        }
         // Get the packet kind of the body.
         let kind = body.packet_kind();
         // Encode the body into a buffer.

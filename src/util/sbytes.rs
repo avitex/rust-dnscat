@@ -1,11 +1,12 @@
-use bytes::Bytes;
-
 use std::borrow::Cow;
+use std::fmt;
 use std::ops::Deref;
+
+use bytes::Bytes;
 
 pub use std::str::{self, Utf8Error};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct StringBytes(Bytes);
 
 impl StringBytes {
@@ -67,5 +68,12 @@ impl Deref for StringBytes {
 
     fn deref(&self) -> &Self::Target {
         unsafe { str::from_utf8_unchecked(self.as_ref()) }
+    }
+}
+
+impl fmt::Debug for StringBytes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s: &str = self.as_ref();
+        write!(f, "{:?}", s)
     }
 }

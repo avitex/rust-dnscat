@@ -363,6 +363,7 @@ pub struct ClientBuilder {
     prefer_server_name: bool,
     recv_queue_size: usize,
     exchange_attempt_max: u8,
+    packet_trace: bool,
 }
 
 impl ClientBuilder {
@@ -407,6 +408,11 @@ impl ClientBuilder {
     pub fn max_retransmits(mut self, max: u8) -> Self {
         assert_ne!(max, 0);
         self.exchange_attempt_max = max;
+        self
+    }
+
+    pub fn packet_trace(mut self, value: bool) -> Self {
+        self.packet_trace = value;
         self
     }
 
@@ -462,6 +468,7 @@ impl ClientBuilder {
             true,
             encryption,
             self.prefer_server_name,
+            self.packet_trace,
         );
         let client = Client {
             session,
@@ -482,6 +489,7 @@ impl ClientBuilder {
 impl Default for ClientBuilder {
     fn default() -> Self {
         Self {
+            packet_trace: false,
             session_id: None,
             session_name: Cow::Borrowed(""),
             initial_sequence: None,

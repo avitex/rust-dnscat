@@ -111,7 +111,7 @@ where
 ///////////////////////////////////////////////////////////////////////////////
 // Packet Body
 
-pub trait PacketBody: Sized + Encode {
+pub trait PacketBody: Sized + Encode + fmt::Debug {
     /// Retrives the packet kind from the body.
     fn packet_kind(&self) -> PacketKind;
 
@@ -422,7 +422,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum SupportedSessionBody {
     Syn(SynBody),
     Msg(MsgBody),
@@ -483,6 +483,17 @@ impl From<FinBody> for SupportedSessionBody {
 impl From<EncBody> for SupportedSessionBody {
     fn from(packet: EncBody) -> Self {
         Self::Enc(packet)
+    }
+}
+
+impl fmt::Debug for SupportedSessionBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Syn(p) => write!(f, "{:?}", p),
+            Self::Msg(p) => write!(f, "{:?}", p),
+            Self::Fin(p) => write!(f, "{:?}", p),
+            Self::Enc(p) => write!(f, "{:?}", p),
+        }
     }
 }
 

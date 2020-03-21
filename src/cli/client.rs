@@ -45,7 +45,7 @@ pub(crate) struct ClientOpts {
     #[clap(long, default_value = "1000")]
     max_delay: u64,
 
-    /// If set, will select a random delay for each transmit between 
+    /// If set, will select a random delay for each transmit between
     /// <min-delay> and <max-delay>.
     #[clap(long)]
     random_delay: bool,
@@ -60,7 +60,7 @@ pub(crate) struct ClientOpts {
     #[clap(long, conflicts_with_all = &["max_retransmits", "retransmit_backoff"])]
     retransmit_forever: bool,
 
-    /// If set, will exponentially backoff in delay from 
+    /// If set, will exponentially backoff in delay from
     /// re-attempting a transmit.
     #[clap(long, conflicts_with = "retransmit_forever")]
     retransmit_backoff: bool,
@@ -88,11 +88,10 @@ pub(crate) struct ClientOpts {
     /// Set the receive chunk buffer size.
     #[clap(long)]
     recv_queue_size: Option<usize>,
-    // TODO
-    // /// Display incoming/outgoing DNSCAT2 packets.
-    // #[clap(long)]
-    // packet_trace: bool,
 
+    /// Display incoming/outgoing DNSCAT2 packets.
+    #[clap(long)]
+    packet_trace: bool,
     // TODO
     // /// Start an interactive 'command' session (default).
     // #[clap(long = "command")]
@@ -123,7 +122,7 @@ pub(crate) async fn start(_opts: &Opts, client_opts: &ClientOpts) {
         .await
         .unwrap();
 
-    let mut conn = ClientBuilder::default();
+    let mut conn = ClientBuilder::default().packet_trace(client_opts.packet_trace);
 
     if let Some(session_id) = client_opts.session_id {
         conn = conn.session_id(session_id)
