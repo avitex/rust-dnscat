@@ -360,7 +360,7 @@ pub struct ClientBuilder {
     initial_sequence: Option<u16>,
     is_command: bool,
     poll_interval: Duration,
-    prefer_peer_name: bool,
+    prefer_server_name: bool,
     recv_queue_size: usize,
     exchange_attempt_max: u8,
 }
@@ -394,8 +394,8 @@ impl ClientBuilder {
         self
     }
 
-    pub fn prefer_peer_name(mut self, value: bool) -> Self {
-        self.prefer_peer_name = value;
+    pub fn prefer_server_name(mut self, value: bool) -> Self {
+        self.prefer_server_name = value;
         self
     }
 
@@ -404,7 +404,7 @@ impl ClientBuilder {
         self
     }
 
-    pub fn max_exchange_attempts(mut self, max: u8) -> Self {
+    pub fn max_retransmits(mut self, max: u8) -> Self {
         assert_ne!(max, 0);
         self.exchange_attempt_max = max;
         self
@@ -461,7 +461,7 @@ impl ClientBuilder {
             self.is_command,
             true,
             encryption,
-            self.prefer_peer_name,
+            self.prefer_server_name,
         );
         let client = Client {
             session,
@@ -485,7 +485,7 @@ impl Default for ClientBuilder {
             session_id: None,
             session_name: Cow::Borrowed(""),
             initial_sequence: None,
-            prefer_peer_name: false,
+            prefer_server_name: false,
             is_command: false,
             recv_queue_size: 16,
             exchange_attempt_max: 4,
