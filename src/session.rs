@@ -9,17 +9,6 @@ use crate::encryption::*;
 use crate::packet::*;
 use crate::transport::*;
 
-macro_rules! debug_msg_body {
-    ($ctx:expr, $msg:expr) => {
-        // debug!(
-        //     concat!($ctx, ": [seq: {}, ack: {}, data: {:?}]"),
-        //     $msg.seq().0,
-        //     $msg.ack().0,
-        //     $msg.data(),
-        // );
-    };
-}
-
 #[derive(Debug, Fail)]
 pub enum SessionError<E: Fail> {
     #[fail(display = "Session is closed")]
@@ -216,7 +205,6 @@ where
         body: SessionBodyBytes,
     ) -> Result<Option<Bytes>, SessionError<T::Error>> {
         let body: MsgBody = self.parse_body(body, true)?;
-        debug_msg_body!("data-rx", body);
         self.validate_exchange(body.seq(), body.ack(), body.data_len())?;
         let data = body.into_data();
         if self.is_client {
@@ -253,7 +241,6 @@ where
         body.set_data(chunk);
         self.set_pending_ack(body.data_len());
         self.set_stage(SessionStage::Recv);
-        debug_msg_body!("data-tx", body);
         body
     }
 
