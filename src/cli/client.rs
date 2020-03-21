@@ -45,8 +45,8 @@ pub(crate) struct ClientOpts {
     #[clap(long, default_value = "1000")]
     max_delay: u64,
 
-    /// If set, will select a random delay for each packet sent
-    /// between <min-delay> and <max-delay>.
+    /// If set, will select a random delay for each transmit between 
+    /// <min-delay> and <max-delay>.
     #[clap(long)]
     random_delay: bool,
 
@@ -60,8 +60,8 @@ pub(crate) struct ClientOpts {
     #[clap(long, conflicts_with_all = &["max_retransmits", "retransmit_backoff"])]
     retransmit_forever: bool,
 
-    /// If set, will exponentially backoff in delay from re-attempting
-    /// a packet transmission.
+    /// If set, will exponentially backoff in delay from 
+    /// re-attempting a transmit.
     #[clap(long, conflicts_with = "retransmit_forever")]
     retransmit_backoff: bool,
 
@@ -71,7 +71,7 @@ pub(crate) struct ClientOpts {
 
     /// If set, will turn off encryption/authentication.
     #[clap(long, conflicts_with = "secret")]
-    no_encryption: bool,
+    insecure: bool,
 
     /// Set the session ID manually.
     #[clap(long)]
