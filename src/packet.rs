@@ -685,7 +685,7 @@ impl PacketBody for SynBody {
 // MSG Packet
 
 /// `u16` sequence value.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 #[repr(transparent)]
 pub struct Sequence(pub u16);
 
@@ -720,6 +720,12 @@ impl Sequence {
 impl From<u16> for Sequence {
     fn from(seq: u16) -> Self {
         Self(seq)
+    }
+}
+
+impl fmt::Debug for Sequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 
