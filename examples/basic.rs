@@ -19,7 +19,9 @@ async fn main() {
 
     let dns_addr = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), DNS_SERVER_PORT);
     let dns_server_name = Name::from_ascii("example.com.").unwrap();
-    let dns_endpoint = Arc::new(BasicDnsEndpoint::new(dns_server_name).unwrap());
+    let dns_endpoint = Arc::new(
+        BasicDnsEndpoint::new_with_defaults(vec![RecordType::A], dns_server_name).unwrap(),
+    );
     let dns_client = DnsClient::connect(dns_addr, dns_endpoint).await.unwrap();
 
     let mut conn = ClientBuilder::default()
