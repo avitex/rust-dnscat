@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use failure::Fail;
+use rand::{rngs::OsRng, seq::SliceRandom, Rng};
 use trust_dns_proto::{
     error::ProtoError,
     rr::{Name, RecordType},
@@ -12,6 +13,8 @@ use super::{Labeller, NameEncoder, NameEncoderError};
 pub type DnsEndpointRequest = (Name, RecordType);
 
 pub trait DnsEndpoint: Send + Sync + 'static {
+    fn supported_queries() -> &'static [RecordType];
+
     /// Returns the max size for request data.
     fn max_request_size(&self) -> usize;
 
@@ -42,6 +45,8 @@ pub enum DnsEndpointError {
     Custom(&'static str),
     #[fail(display = "Name encoder error: {}", _0)]
     Name(NameEncoderError),
+    #[fail(display = "Unsupported record type: {}", _0)]
+    UnsupportedQuery(RecordType),
 }
 
 impl From<NameEncoderError> for DnsEndpointError {
@@ -51,51 +56,80 @@ impl From<NameEncoderError> for DnsEndpointError {
 }
 
 #[derive(Debug)]
-pub struct BasicDnsEndpoint {
+struct BasicInner<R> {
+    random: R,
+    name_encoder: NameEncoder,
+    query_types: Vec<RecordType>,
+}
+
+#[derive(Debug)]
+pub struct BasicDnsEndpoint<R: Rng = OsRng> {
+    inner: Arc<Mutex<BasicInner<R>>>,
     max_request_size: usize,
-    name_encoder: Arc<Mutex<NameEncoder>>,
-    request_record_type: RecordType,
 }
 
 impl BasicDnsEndpoint {
-    pub fn new(constant: Name) -> Result<Self, DnsEndpointError> {
+    pub fn new_with_defaults(
+        query_types: Vec<RecordType>,
+        constant: Name,
+    ) -> Result<Self, DnsEndpointError> {
         let name_encoder = NameEncoder::new(constant, Labeller::random())?;
-        Ok(Self::new_with_encoder(name_encoder))
+        Ok(Self::new(query_types, name_encoder, OsRng))
     }
+}
 
-    pub fn new_with_encoder(name_encoder: NameEncoder) -> Self {
+impl<R: Rng> BasicDnsEndpoint<R> {
+    pub fn new(query_types: Vec<RecordType>, name_encoder: NameEncoder, random: R) -> Self {
+        assert_ne!(query_types.len(), 0);
         let max_request_size = name_encoder.max_hex_data() as usize;
-        let name_encoder = Arc::new(Mutex::new(name_encoder));
-        Self {
+        let inner = BasicInner {
+            random,
+            query_types,
             name_encoder,
+        };
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
             max_request_size,
-            request_record_type: RecordType::A,
         }
     }
 
-    fn lock_name_encoder(&self) -> MutexGuard<'_, NameEncoder> {
-        self.name_encoder
-            .lock()
-            .expect("name encoder lock poisoned")
+    fn lock_inner(&self) -> MutexGuard<'_, BasicInner<R>> {
+        self.inner.lock().expect("endpoint inner poisoned")
     }
 
     fn decode_name(&self, name: &Name) -> Result<Bytes, NameEncoderError> {
-        self.lock_name_encoder().decode_hex(name)
+        self.lock_inner().name_encoder.decode_hex(name)
     }
 
     fn encode_name(&self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
-        self.lock_name_encoder().encode_hex(bytes)
+        self.lock_inner().name_encoder.encode_hex(bytes)
     }
 }
 
 impl DnsEndpoint for BasicDnsEndpoint {
+    fn supported_queries() -> &'static [RecordType] {
+        &[
+            RecordType::TXT,
+            RecordType::MX,
+            RecordType::CNAME,
+            RecordType::A,
+            RecordType::AAAA,
+        ]
+    }
+
     fn max_request_size(&self) -> usize {
         self.max_request_size
     }
 
     fn build_request(&self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError> {
-        let name_data = self.encode_name(&data[..])?;
-        Ok((name_data, self.request_record_type))
+        let BasicInner {
+            ref mut name_encoder,
+            ref query_types,
+            ref mut random,
+        } = *self.lock_inner();
+        let name_data = name_encoder.encode_hex(&data[..])?;
+        let query_type = query_types.choose(random).unwrap();
+        Ok((name_data, *query_type))
     }
 
     fn parse_request(&self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError> {

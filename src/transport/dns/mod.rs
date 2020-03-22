@@ -21,6 +21,8 @@ pub enum DnsTransportError<D: Fail> {
     Datagram(DatagramError<D>),
     #[fail(display = "DNS endpoint error: {}", _0)]
     Endpoint(DnsEndpointError),
+    #[fail(display = "No answers were returned")]
+    NoAnswers,
 }
 
 impl<D: Fail> From<ProtoError> for DnsTransportError<D> {

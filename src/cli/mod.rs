@@ -2,20 +2,18 @@ mod client;
 
 use clap::Clap;
 
-use self::client::ClientOpts;
-
-#[derive(Clap)]
+#[derive(Clap, Debug)]
 #[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
 pub(crate) struct Opts {
     #[clap(subcommand)]
     subcmd: SubCommand,
 }
 
-#[derive(Clap)]
+#[derive(Clap, Debug)]
 enum SubCommand {
     /// DNSCAT client
     #[clap(name = "client")]
-    Client(ClientOpts),
+    Client(client::Opts),
 }
 
 pub async fn start() {
@@ -25,6 +23,6 @@ pub async fn start() {
     let opts = Opts::parse();
 
     match opts.subcmd {
-        SubCommand::Client(ref client_opts) => client::start(&opts, client_opts).await,
+        SubCommand::Client(ref client_opts) => client::start(client_opts).await,
     }
 }

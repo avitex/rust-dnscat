@@ -30,6 +30,8 @@ const DEFAULT_LOOKUP_OPTIONS: DnsRequestOptions = DnsRequestOptions {
     expects_multiple_responses: false,
 };
 
+const MULTI_NAME_RESPONSE: bool = false;
+
 pub struct DnsClient<H, E> {
     dns_handle: H,
     runtime_handle: runtime::Handle,
@@ -87,42 +89,66 @@ where
         answers: Vec<Record>,
         record_type: RecordType,
     ) -> Result<D, DnsTransportError<D::Error>> {
+        if answers.is_empty() {
+            return Err(DnsTransportError::NoAnswers);
+        }
         // We will filter for the record type we requested, and
         // drop record types we don't care about silently later.
         let answers = answers.into_iter().map(|r| r.unwrap_rdata());
-        // Create the buffer we will put the data in.
-        let mut bytes = BytesMut::new();
         // Parse the record data depending on the record type.
-        match record_type {
+        let mut bytes = match record_type {
             RecordType::A => {
+                let mut buf = BytesMut::new();
                 let addrs = answers.filter_map(|d| d.into_a().ok());
-                SplitDatagram::write_iter_into(addrs, &mut bytes).map_err(DatagramError::from)?;
+                SplitDatagram::write_iter_into(addrs, &mut buf).map_err(DatagramError::from)?;
+                buf.freeze()
             }
             RecordType::AAAA => {
+                let mut buf = BytesMut::new();
                 let addrs = answers.filter_map(|d| d.into_aaaa().ok());
-                SplitDatagram::write_iter_into(addrs, &mut bytes).map_err(DatagramError::from)?;
+                SplitDatagram::write_iter_into(addrs, &mut buf).map_err(DatagramError::from)?;
+                buf.freeze()
             }
-            RecordType::CNAME => {
+            RecordType::CNAME if MULTI_NAME_RESPONSE => {
+                let mut buf = BytesMut::new();
                 let mut blobs = Vec::with_capacity(answers.len());
                 let names = answers.filter_map(|d| d.into_cname().ok());
                 for name in names {
                     blobs.push(self.endpoint.parse_cname_response(name)?);
                 }
-                SplitDatagram::write_iter_into(blobs, &mut bytes).map_err(DatagramError::from)?;
+                SplitDatagram::write_iter_into(blobs, &mut buf).map_err(DatagramError::from)?;
+                buf.freeze()
             }
-            RecordType::MX => {
+            RecordType::CNAME => {
+                let name = answers
+                    .filter_map(|d| d.into_cname().ok())
+                    .next()
+                    .expect("a CNAME answer");
+                self.endpoint.parse_cname_response(name)?
+            }
+            RecordType::MX if MULTI_NAME_RESPONSE => {
+                let mut buf = BytesMut::new();
                 let mut blobs = Vec::with_capacity(answers.len());
                 let names = answers.filter_map(|d| d.into_mx().ok());
                 for mx in names {
                     blobs.push(self.endpoint.parse_mx_response(mx.exchange().clone())?);
                 }
-                SplitDatagram::write_iter_into(blobs, &mut bytes).map_err(DatagramError::from)?;
+                SplitDatagram::write_iter_into(blobs, &mut buf).map_err(DatagramError::from)?;
+                buf.freeze()
+            }
+            RecordType::MX => {
+                let name = answers
+                    .filter_map(|d| d.into_mx().ok())
+                    .next()
+                    .expect("a MX answer");
+                self.endpoint.parse_mx_response(name.exchange().clone())?
             }
             RecordType::TXT => {
+                let mut buf = BytesMut::new();
                 let mut txts = answers.filter_map(|d| d.into_txt().ok());
                 if let Some(txt) = txts.next() {
                     for blob in txt.txt_data() {
-                        hex::decode_into_buf(&mut bytes, &blob[..], true)
+                        hex::decode_into_buf(&mut buf, &blob[..], true)
                             .map_err(DatagramError::from)?;
                     }
 
@@ -130,10 +156,10 @@ where
                         warn!("using the first of multiple txt answers received");
                     }
                 }
+                buf.freeze()
             }
             other => panic!("unsupported record type: {:?}", other),
-        }
-        let mut bytes = bytes.freeze();
+        };
         let datagram = D::decode(&mut bytes).map_err(DatagramError::Decode)?;
         if bytes.is_empty() {
             Ok(datagram)

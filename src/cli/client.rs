@@ -1,18 +1,15 @@
-#![allow(unused)]
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use clap::{ArgSettings, Clap};
-use log::{error, info};
-
-use super::Opts;
+use clap::Clap;
+use log::{error, info, warn};
 
 use crate::client::ClientBuilder;
 use crate::transport::dns::{BasicDnsEndpoint, DnsClient, Name, RecordType};
 
 #[derive(Clap, Debug)]
-pub(crate) struct ClientOpts {
+#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+pub(crate) struct Opts {
     /// DNS endpoint name.
     domain: Name,
 
@@ -57,7 +54,7 @@ pub(crate) struct ClientOpts {
 
     /// If set, will re-transmit forever until a server sends a
     /// valid response.
-    #[clap(long, conflicts_with_all = &["max_retransmits", "retransmit_backoff"])]
+    #[clap(long, conflicts_with = "max_retransmits")]
     retransmit_forever: bool,
 
     /// If set, will exponentially backoff in delay from
@@ -89,66 +86,80 @@ pub(crate) struct ClientOpts {
     #[clap(long)]
     recv_queue_size: Option<usize>,
 
-    /// Display incoming/outgoing DNSCAT2 packets.
+    /// If set, display incoming/outgoing DNSCAT2 packets.
     #[clap(long)]
     packet_trace: bool,
-    // TODO
-    // /// Start an interactive 'command' session (default).
-    // #[clap(long = "command")]
-    // command: bool,
 
-    // TODO
-    // /// Send/receive output to the console.
-    // #[clap(long)]
-    // console: bool,
-
-    // TODO
-    // /// Execute the given process and link it to the stream.
-    // #[clap(long = "exec", short = "e")]
-    // exec: bool,
-
-    // TODO
-    // /// Send/receive output to the console.
-    // #[clap(long = "ping")]
-    // ping: bool,
+    /// If set, indicate to the server this is a command session.
+    #[clap(long = "command")]
+    command: bool,
 }
 
-pub(crate) async fn start(_opts: &Opts, client_opts: &ClientOpts) {
-    let dns_server_addr = client_opts
-        .server
-        .unwrap_or_else(|| "8.8.8.8:53".parse().unwrap());
-    let dns_endpoint = BasicDnsEndpoint::new(client_opts.domain.clone()).unwrap();
+// TODO
+// /// Send/receive output to the console.
+// #[clap(long)]
+// console: bool,
+
+// TODO
+// /// Execute the given process and link it to the stream.
+// #[clap(long = "exec", short = "e")]
+// exec: bool,
+
+// TODO
+// /// Send/receive output to the console.
+// #[clap(long = "ping")]
+// ping: bool,
+
+pub(crate) async fn start(opts: &Opts) {
+    // Build DNS client
+    let dns_server_addr = if let Some(server) = opts.server {
+        server
+    } else {
+        let server = get_system_dns_server();
+        if !opts.domain.is_fqdn() {
+            // Unless you've changed system configuration to point to a
+            // DNSCAT2 server, this will most certainly not work.
+            warn!("non-FQDN is being used with a system DNS server");
+        }
+        server
+    };
+    // Build the DNS endpoint
+    let dns_endpoint =
+        BasicDnsEndpoint::new_with_defaults(opts.query.clone(), opts.domain.clone()).unwrap();
+    // Build the DNS client
     let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
         .await
         .unwrap();
+    // Start building the client connection
+    let mut conn = ClientBuilder::default()
+        .is_command(opts.command)
+        .packet_trace(opts.packet_trace);
 
-    let mut conn = ClientBuilder::default().packet_trace(client_opts.packet_trace);
+    // opts.min_delay, opts.max_delay, opts.random_delay
+    // opts.max_retransmits, opts.retransmit_forever, opts.retransmit_backoff
 
-    if let Some(session_id) = client_opts.session_id {
+    if let Some(session_id) = opts.session_id {
         conn = conn.session_id(session_id)
     }
-    if let Some(ref session_name) = client_opts.session_name {
+    if let Some(ref session_name) = opts.session_name {
         conn = conn.session_name(session_name.clone())
     }
-    // if let Some(max_retransmits) = client_opts.max_retransmits {
-    //     conn = conn.max_retransmits(max_retransmits)
-    // }
-    if let Some(prefer_server_name) = client_opts.prefer_server_name {
+    if let Some(prefer_server_name) = opts.prefer_server_name {
         conn = conn.prefer_server_name(prefer_server_name)
     }
-    if let Some(recv_queue_size) = client_opts.recv_queue_size {
+    if let Some(recv_queue_size) = opts.recv_queue_size {
         conn = conn.recv_queue_size(recv_queue_size)
     }
 
     info!(
         "connecting to `{}` using `{}`",
-        dns_server_addr, client_opts.domain
+        dns_server_addr, opts.domain
     );
 
-    let conn = if let Some(ref _secret) = client_opts.secret {
+    let conn = if let Some(ref _secret) = opts.secret {
         unimplemented!()
     } else {
-        assert!(client_opts.insecure);
+        assert!(opts.insecure);
         match conn.connect_insecure(dns_client).await {
             Ok(conn) => conn,
             Err(err) => {
@@ -158,5 +169,31 @@ pub(crate) async fn start(_opts: &Opts, client_opts: &ClientOpts) {
         }
     };
 
-    info!("connected with session ID {}", conn.session().id());
+    info!(
+        "connected with session (id: {}, name: {})",
+        conn.session().id(),
+        conn.session().name().unwrap_or("<none>")
+    );
+}
+
+fn get_system_dns_server() -> SocketAddr {
+    use trust_dns_resolver::config::Protocol;
+    use trust_dns_resolver::system_conf::read_system_conf;
+
+    let config = match read_system_conf() {
+        Ok((config, _)) => config,
+        Err(err) => panic!("failed to load system DNS config: {}", err),
+    };
+
+    let server_addr = config
+        .name_servers()
+        .iter()
+        .filter(|server| server.protocol == Protocol::Udp)
+        .map(|server| server.socket_addr)
+        .next();
+
+    match server_addr {
+        Some(server_addr) => server_addr,
+        None => panic!("no valid system DNS servers"),
+    }
 }
