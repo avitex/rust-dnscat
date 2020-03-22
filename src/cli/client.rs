@@ -5,7 +5,7 @@ use clap::Clap;
 use log::{error, info, warn};
 
 use crate::client::ClientBuilder;
-use crate::transport::dns::{BasicDnsEndpoint, DnsClient, Name, RecordType};
+use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
 
 #[derive(Clap, Debug)]
 #[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
@@ -115,7 +115,11 @@ pub(crate) async fn start(opts: &Opts) {
     let dns_server_addr = if let Some(server) = opts.server {
         server
     } else {
-        let server = get_system_dns_server();
+        let server = match dns::get_system_dns_server() {
+            Ok(Some(server_addr)) => server_addr,
+            Ok(None) => panic!("no valid system DNS servers"),
+            Err(err) => panic!("failed to load system DNS config: {}", err),
+        };
         if !opts.domain.is_fqdn() {
             // Unless you've changed system configuration to point to a
             // DNSCAT2 server, this will most certainly not work.
@@ -174,26 +178,4 @@ pub(crate) async fn start(opts: &Opts) {
         conn.session().id(),
         conn.session().name().unwrap_or("<none>")
     );
-}
-
-fn get_system_dns_server() -> SocketAddr {
-    use trust_dns_resolver::config::Protocol;
-    use trust_dns_resolver::system_conf::read_system_conf;
-
-    let config = match read_system_conf() {
-        Ok((config, _)) => config,
-        Err(err) => panic!("failed to load system DNS config: {}", err),
-    };
-
-    let server_addr = config
-        .name_servers()
-        .iter()
-        .filter(|server| server.protocol == Protocol::Udp)
-        .map(|server| server.socket_addr)
-        .next();
-
-    match server_addr {
-        Some(server_addr) => server_addr,
-        None => panic!("no valid system DNS servers"),
-    }
 }

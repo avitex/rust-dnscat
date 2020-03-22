@@ -2,6 +2,9 @@ mod client;
 mod endpoint;
 mod name;
 
+#[cfg(feature = "trust-dns-resolver")]
+mod resolver;
+
 pub use self::client::*;
 pub use self::endpoint::*;
 pub use self::name::*;
@@ -10,6 +13,9 @@ use failure::Fail;
 use trust_dns_proto::error::ProtoError;
 
 pub use trust_dns_proto::rr::{Name, RecordType};
+
+#[cfg(feature = "trust-dns-resolver")]
+pub use self::resolver::get_system_dns_server;
 
 use crate::transport::DatagramError;
 
