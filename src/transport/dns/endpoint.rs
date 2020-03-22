@@ -74,23 +74,36 @@ impl BasicDnsEndpoint {
         constant: Name,
     ) -> Result<Self, DnsEndpointError> {
         let name_encoder = NameEncoder::new(constant, Labeller::random())?;
-        Ok(Self::new(query_types, name_encoder, OsRng))
+        Self::new(query_types, name_encoder, OsRng)
     }
 }
 
-impl<R: Rng> BasicDnsEndpoint<R> {
-    pub fn new(query_types: Vec<RecordType>, name_encoder: NameEncoder, random: R) -> Self {
+impl<R> BasicDnsEndpoint<R>
+where
+    R: Rng + Send + 'static,
+{
+    pub fn new(
+        query_types: Vec<RecordType>,
+        name_encoder: NameEncoder,
+        random: R,
+    ) -> Result<Self, DnsEndpointError> {
         assert_ne!(query_types.len(), 0);
+        let unsupported_query = query_types
+            .iter()
+            .find(|query| !Self::supported_queries().contains(query));
+        if let Some(query) = unsupported_query {
+            return Err(DnsEndpointError::UnsupportedQuery(*query));
+        }
         let max_request_size = name_encoder.max_hex_data() as usize;
         let inner = BasicInner {
             random,
             query_types,
             name_encoder,
         };
-        Self {
+        Ok(Self {
             inner: Arc::new(Mutex::new(inner)),
             max_request_size,
-        }
+        })
     }
 
     fn lock_inner(&self) -> MutexGuard<'_, BasicInner<R>> {
@@ -106,7 +119,10 @@ impl<R: Rng> BasicDnsEndpoint<R> {
     }
 }
 
-impl DnsEndpoint for BasicDnsEndpoint {
+impl<R> DnsEndpoint for BasicDnsEndpoint<R>
+where
+    R: Rng + Send + 'static,
+{
     fn supported_queries() -> &'static [RecordType] {
         &[
             RecordType::TXT,
