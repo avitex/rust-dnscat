@@ -1,15 +1,17 @@
 use std::net::SocketAddr;
+use std::process::Stdio;
 use std::sync::Arc;
 
-use clap::Clap;
+use clap::{AppSettings, Clap};
+use futures::future;
 use log::{error, info, warn};
-use tokio::{io, task};
+use tokio::{io, process};
 
 use crate::client::ClientBuilder;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
 
 #[derive(Clap, Debug)]
-#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>", setting = AppSettings::TrailingVarArg)]
 pub(crate) struct Opts {
     /// DNS endpoint name.
     domain: Name,
@@ -92,8 +94,15 @@ pub(crate) struct Opts {
     packet_trace: bool,
 
     /// If set, indicate to the server this is a command session.
-    #[clap(long = "command")]
+    #[clap(long)]
     command: bool,
+
+    /// Execute a process and attach stdin/stdout.
+    #[clap(long, short)]
+    exec: bool,
+
+    #[clap(last = true, multiple = true, allow_hyphen_values = true)]
+    exec_opts: Vec<String>,
 }
 
 pub(crate) async fn start(opts: &Opts) {
@@ -165,12 +174,47 @@ pub(crate) async fn start(opts: &Opts) {
         conn.session().name().unwrap_or("<none>")
     );
 
-    let (mut reader, mut writer) = io::split(conn);
-    let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
+    let (reader, writer) = io::split(conn);
 
-    task::spawn(async move {
-        io::copy(&mut stdin, &mut writer).await.unwrap();
-    });
+    if opts.exec {
+        let process = opts
+            .exec_opts
+            .get(1)
+            .expect("exec specified with no process");
+        let result = process::Command::new(process)
+            .args(&opts.exec_opts[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn();
+        match result {
+            Ok(child) => {
+                let stdin = child.stdin.unwrap();
+                let stdout = child.stdout.unwrap();
+                start_rw(stdout, stdin, reader, writer).await
+            }
+            Err(err) => panic!("failed to start `{}`: {}", process, err),
+        }
+    } else {
+        start_rw(io::stdin(), io::stdout(), reader, writer).await
+    }
+}
 
-    io::copy(&mut reader, &mut stdout).await.unwrap();
+async fn start_rw<R1, W1, R2, W2>(
+    mut read: R1,
+    mut write: W1,
+    mut client_read: R2,
+    mut client_write: W2,
+) where
+    R1: io::AsyncRead + Unpin,
+    W1: io::AsyncWrite + Unpin,
+    R2: io::AsyncRead + Unpin,
+    W2: io::AsyncWrite + Unpin,
+{
+    let to_server_fut = io::copy(&mut read, &mut client_write);
+    let to_client_fut = io::copy(&mut client_read, &mut write);
+
+    match future::select(to_server_fut, to_client_fut).await {
+        future::Either::Left((result, _)) => result.unwrap(),
+        future::Either::Right((result, _)) => result.unwrap(),
+    };
 }
