@@ -10,3 +10,18 @@ Documentation hosted on [docs.rs](https://docs.rs/dnscat).
 ```toml
 dnscat = "0.1.0"
 ```
+
+## CLI Usage
+
+First install dnscat with:
+
+```text
+cargo install dnscat
+```
+
+Start the client with the DNSCAT2 stream attached to netcat:
+
+```text
+dnscat client example.com. --server 127.0.0.1:53531 \
+  --insecure --session-name my-session --exec nc -l 8081
+```
