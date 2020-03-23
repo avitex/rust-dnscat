@@ -96,21 +96,6 @@ pub(crate) struct Opts {
     command: bool,
 }
 
-// TODO
-// /// Send/receive output to the console.
-// #[clap(long)]
-// console: bool,
-
-// TODO
-// /// Execute the given process and link it to the stream.
-// #[clap(long = "exec", short = "e")]
-// exec: bool,
-
-// TODO
-// /// Send/receive output to the console.
-// #[clap(long = "ping")]
-// ping: bool,
-
 pub(crate) async fn start(opts: &Opts) {
     // Build DNS client
     let dns_server_addr = if let Some(server) = opts.server {
