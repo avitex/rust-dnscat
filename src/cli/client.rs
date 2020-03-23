@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Clap;
 use futures::future;
@@ -83,7 +84,7 @@ pub(crate) struct Opts {
 
     /// If set, prefer the server's session name.
     #[clap(long)]
-    prefer_server_name: Option<bool>,
+    prefer_server_name: bool,
 
     /// Set the receive chunk buffer size.
     #[clap(long)]
@@ -129,19 +130,21 @@ pub(crate) async fn start(opts: &Opts) {
     // Start building the client connection
     let mut conn = ClientBuilder::default()
         .is_command(opts.command)
+        .min_delay(Duration::from_millis(opts.min_delay))
+        .max_delay(Duration::from_millis(opts.max_delay))
+        .random_delay(opts.random_delay)
+        .max_retransmits(opts.max_retransmits)
+        .retransmit_forever(opts.retransmit_forever)
+        .retransmit_backoff(opts.retransmit_backoff)
+        .random_delay(opts.random_delay)
+        .prefer_server_name(opts.prefer_server_name)
         .packet_trace(opts.packet_trace);
-
-    // opts.min_delay, opts.max_delay, opts.random_delay
-    // opts.max_retransmits, opts.retransmit_forever, opts.retransmit_backoff
 
     if let Some(session_id) = opts.session_id {
         conn = conn.session_id(session_id)
     }
     if let Some(ref session_name) = opts.session_name {
         conn = conn.session_name(session_name.clone())
-    }
-    if let Some(prefer_server_name) = opts.prefer_server_name {
-        conn = conn.prefer_server_name(prefer_server_name)
     }
     if let Some(recv_queue_size) = opts.recv_queue_size {
         conn = conn.recv_queue_size(recv_queue_size)

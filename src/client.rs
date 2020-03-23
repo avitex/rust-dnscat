@@ -56,13 +56,11 @@ impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
 #[derive(Debug)]
 struct Exchange<T> {
     inner: T,
-    attempt: u8,
-    attempt_max: u8,
+    attempt: usize,
+    attempt_max: usize,
     backoff: Option<Delay>,
     sent_body: SessionBodyBytes,
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -74,7 +72,7 @@ where
     transport: T,
     session: Session<E>,
     exchange: Option<Exchange<T::Future>>,
-    exchange_attempt_max: u8,
+    exchange_attempt_max: usize,
     poll_delay: Option<Delay>,
     poll_interval: Duration,
     send_buf: Bytes,
@@ -211,7 +209,7 @@ where
         LazyPacket::new(SupportedBody::Session(frame))
     }
 
-    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: u8) {
+    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: usize) {
         assert!(self.exchange.is_none());
         let packet = Self::build_session_packet(self.session.id(), body.clone());
         let inner = self.transport.exchange(packet);
@@ -454,7 +452,7 @@ pub struct ClientBuilder {
     poll_interval: Duration,
     prefer_server_name: bool,
     recv_queue_size: usize,
-    exchange_attempt_max: u8,
+    exchange_attempt_max: usize,
     packet_trace: bool,
 }
 
@@ -477,13 +475,39 @@ impl ClientBuilder {
         self
     }
 
-    pub fn is_command(mut self, value: bool) -> Self {
-        self.is_command = value;
+    pub fn min_delay(self, _duration: Duration) -> Self {
+        // TODO
         self
     }
 
-    pub fn poll_interval(mut self, interval: Duration) -> Self {
-        self.poll_interval = interval;
+    pub fn max_delay(self, _duration: Duration) -> Self {
+        // TODO
+        self
+    }
+
+    pub fn random_delay(self, _value: bool) -> Self {
+        // TODO
+        self
+    }
+
+    pub fn max_retransmits(mut self, max: usize) -> Self {
+        assert_ne!(max, 0);
+        self.exchange_attempt_max = max;
+        self
+    }
+
+    pub fn retransmit_forever(self, _value: bool) -> Self {
+        // TODO
+        self
+    }
+
+    pub fn retransmit_backoff(self, _value: bool) -> Self {
+        // TODO
+        self
+    }
+
+    pub fn is_command(mut self, value: bool) -> Self {
+        self.is_command = value;
         self
     }
 
@@ -494,12 +518,6 @@ impl ClientBuilder {
 
     pub fn recv_queue_size(mut self, size: usize) -> Self {
         self.recv_queue_size = size;
-        self
-    }
-
-    pub fn max_retransmits(mut self, max: u8) -> Self {
-        assert_ne!(max, 0);
-        self.exchange_attempt_max = max;
         self
     }
 
