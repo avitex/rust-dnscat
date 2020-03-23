@@ -140,7 +140,8 @@ where
 
         if let Some(ref mut delay_fut) = delay {
             ready!(Pin::new(delay_fut).poll(cx));
-            let packet = Self::build_session_packet(self.session.id(), body.clone());
+            let packet =
+                Self::build_session_packet(&mut self.random, self.session.id(), body.clone());
             *delay = None;
             *attempt += 1;
             *inner = self.transport.exchange(packet);
@@ -213,11 +214,15 @@ where
         }
     }
 
-    fn build_session_packet(session_id: SessionId, body: SessionBodyBytes) -> LazyPacket {
+    fn build_session_packet(
+        random: &mut R,
+        session_id: SessionId,
+        body: SessionBodyBytes,
+    ) -> LazyPacket {
         // Wrap the encoded session body in a session body frame.
         let frame = SessionBodyFrame::new(session_id, body);
         // Wrap the session body frame in a packet frame and return.
-        LazyPacket::new(SupportedBody::Session(frame))
+        LazyPacket::new(random.gen(), SupportedBody::Session(frame))
     }
 
     fn next_transmit_delay(&mut self) -> Option<Delay> {
@@ -238,7 +243,7 @@ where
 
     fn start_exchange(&mut self, body: SessionBodyBytes) {
         assert!(self.exchange.is_none());
-        let packet = Self::build_session_packet(self.session.id(), body.clone());
+        let packet = Self::build_session_packet(&mut self.random, self.session.id(), body.clone());
         let inner = self.transport.exchange(packet);
         let delay = self.next_transmit_delay();
         self.exchange = Some(Exchange {
@@ -605,7 +610,7 @@ where
     }
 
     async fn generic_connect<T, E>(
-        self,
+        mut self,
         transport: T,
         encryption: Option<E>,
     ) -> Result<Client<T, E, R>, ClientError<T::Error, E::Error>>
@@ -614,20 +619,17 @@ where
         T::Future: Unpin,
         E: Encryption,
     {
-        let session_id = self.session_id.unwrap_or_else(rand::random);
+        let init_seq = self.initial_sequence.unwrap_or_else(|| self.random.gen());
+        let session_id = self.session_id.unwrap_or_else(|| self.random.gen());
         let session_name = if self.session_name.is_empty() {
             None
         } else {
             Some(self.session_name)
         };
-        let init_seq = self
-            .initial_sequence
-            .map(Sequence)
-            .unwrap_or_else(Sequence::random);
         let session = Session::new(
             session_id,
             session_name,
-            init_seq,
+            Sequence(init_seq),
             self.is_command,
             true,
             encryption,

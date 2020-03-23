@@ -38,13 +38,8 @@ impl<T> Packet<T>
 where
     T: PacketBody,
 {
-    /// Constructs a new packet given a body and a randomly generated ID.
-    pub fn new(body: T) -> Self {
-        Self::from_parts(rand::random(), body)
-    }
-
     /// Constructs a new packet given a packet ID and body.
-    pub fn from_parts(id: PacketId, body: T) -> Self {
+    pub fn new(id: PacketId, body: T) -> Self {
         Self { id, body }
     }
 
@@ -109,7 +104,7 @@ where
         let id = parse::be_u16(b)?;
         let kind = parse::be_u8(b)?.into();
         let body = T::decode_kind(kind, b)?;
-        Ok(Self::from_parts(id, body))
+        Ok(Self::new(id, body))
     }
 }
 
@@ -716,10 +711,6 @@ impl Sequence {
     pub fn add(self, length: u8) -> Self {
         Self(self.0.wrapping_add(length as u16))
     }
-
-    pub fn random() -> Self {
-        Self(rand::random())
-    }
 }
 
 impl From<u16> for Sequence {
@@ -1202,7 +1193,7 @@ mod tests {
         body: B,
     ) -> Packet {
         let packet_body = SupportedBody::Session(SessionBodyFrame::new(session_id, body.into()));
-        Packet::from_parts(packet_id, packet_body)
+        Packet::new(packet_id, packet_body)
     }
 
     #[test]

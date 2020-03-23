@@ -24,8 +24,11 @@ impl ExchangeTransport<LazyPacket> for PacketEchoTransport {
             let tx_body = SupportedSessionBody::decode_kind(kind, &mut body_bytes).unwrap();
             let rx_body = match tx_body {
                 SupportedSessionBody::Syn(syn) => {
-                    let syn =
-                        SynBody::new(Sequence::random(), syn.is_command(), syn.is_encrypted());
+                    let syn = SynBody::new(
+                        Sequence(rand::random()),
+                        syn.is_command(),
+                        syn.is_encrypted(),
+                    );
                     SupportedSessionBody::Syn(syn)
                 }
                 SupportedSessionBody::Msg(mut msg) => {
