@@ -17,14 +17,6 @@ pub enum SessionError<E: Fail> {
     Encryption(E),
     #[fail(display = "Encryption flag mismatch")]
     EncryptionMismatch,
-    #[fail(
-        display = "Unexpected session ID (expected: {}, got: {})",
-        expected, actual
-    )]
-    UnexpectedId {
-        expected: SessionId,
-        actual: SessionId,
-    },
     #[fail(display = "Unexpected packet kind `{:?}` in stage `{:?}`", kind, stage)]
     UnexpectedKind {
         kind: PacketKind,
@@ -161,9 +153,8 @@ where
 
     pub fn handle_inbound(
         &mut self,
-        packet: LazyPacket,
+        body: SessionBodyBytes,
     ) -> Result<Option<Bytes>, SessionError<T::Error>> {
-        let body = self.parse_packet(packet)?;
         let result = match (self.stage, body.packet_kind()) {
             (SessionStage::Recv, PacketKind::MSG) => return self.handle_msg(body),
             (SessionStage::SessionInit, PacketKind::SYN) => self.handle_syn(body),
@@ -395,39 +386,6 @@ where
         };
         // Return the new session body
         Ok(SessionBodyBytes::new(kind, body_bytes))
-    }
-
-    ///////////////////////////////////////////////////////////////////////////
-
-    fn parse_packet(&self, packet: LazyPacket) -> Result<SessionBodyBytes, SessionError<T::Error>> {
-        let kind = packet.kind();
-        // Consume the received packet into a session frame if applicable
-        if let Some(frame) = packet.into_body().into_session_frame() {
-            // Check the session ID returned matches our session ID
-            if self.id != frame.session_id() {
-                Err(SessionError::UnexpectedId {
-                    expected: self.id,
-                    actual: frame.session_id(),
-                })
-            } else {
-                // Return the framed session body bytes.
-                Ok(frame.into_body().into())
-            }
-        } else {
-            Err(SessionError::UnexpectedKind {
-                kind,
-                stage: self.stage,
-            })
-        }
-    }
-
-    pub fn build_packet(&self, body: SessionBodyBytes) -> LazyPacket {
-        // Generate our packet ID.
-        let packet_id = rand::random();
-        // Wrap the encoded session body in a session body frame with the session id and packet kind.
-        let session_frame = SessionBodyFrame::new(self.id, body.clone());
-        // Wrap the session body frame in a packet frame and return.
-        Packet::new(packet_id, SupportedBody::Session(session_frame))
     }
 
     ///////////////////////////////////////////////////////////////////////////

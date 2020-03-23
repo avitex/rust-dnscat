@@ -15,7 +15,7 @@ use futures_timer::Delay;
 use log::{debug, warn};
 
 use crate::encryption::Encryption;
-use crate::packet::{LazyPacket, Sequence, SessionBodyBytes};
+use crate::packet::*;
 use crate::session::{Session, SessionError};
 use crate::transport::ExchangeTransport;
 
@@ -25,6 +25,16 @@ pub enum ClientError<T: Fail, E: Fail> {
     Transport(T),
     #[fail(display = "Session error: {}", _0)]
     Session(SessionError<E>),
+    #[fail(
+        display = "Unexpected session ID (expected: {}, got: {})",
+        expected, actual
+    )]
+    UnexpectedId {
+        expected: SessionId,
+        actual: SessionId,
+    },
+    #[fail(display = "Unexpected packet kind `{:?}`", _0)]
+    UnexpectedKind(PacketKind),
 }
 
 impl<T: Fail, E: Fail> From<SessionError<E>> for ClientError<T, E> {
@@ -125,7 +135,7 @@ where
 
         if let Some(ref mut backoff_fut) = backoff {
             ready!(Pin::new(backoff_fut).poll(cx));
-            let packet = self.session.build_packet(sent_body.clone());
+            let packet = Self::build_session_packet(self.session.id(), sent_body.clone());
             *backoff = None;
             *attempt += 1;
             *inner = self.transport.exchange(packet);
@@ -134,7 +144,10 @@ where
         let result = match ready!(Pin::new(inner).poll(cx)) {
             // TODO: destroy session if fatal?
             Err(err) => Err(ClientError::Transport(err)),
-            Ok(packet) => self.session.handle_inbound(packet).map_err(Into::into),
+            Ok(packet) => match Self::parse_session_packet(self.session.id(), packet) {
+                Ok(body) => self.session.handle_inbound(body).map_err(Into::into),
+                Err(err) => Err(err),
+            },
         };
 
         let chunk_opt = match result {
@@ -166,9 +179,38 @@ where
         }
     }
 
+    fn parse_session_packet(
+        session_id: SessionId,
+        packet: LazyPacket,
+    ) -> Result<SessionBodyBytes, ClientError<T::Error, E::Error>> {
+        let kind = packet.kind();
+        // Consume the received packet into a session frame if applicable
+        if let Some(frame) = packet.into_body().into_session_frame() {
+            // Check the session ID returned matches our session ID
+            if session_id != frame.session_id() {
+                Err(ClientError::UnexpectedId {
+                    expected: session_id,
+                    actual: frame.session_id(),
+                })
+            } else {
+                // Return the framed session body bytes.
+                Ok(frame.into_body().into())
+            }
+        } else {
+            Err(ClientError::UnexpectedKind(kind))
+        }
+    }
+
+    fn build_session_packet(session_id: SessionId, body: SessionBodyBytes) -> LazyPacket {
+        // Wrap the encoded session body in a session body frame.
+        let frame = SessionBodyFrame::new(session_id, body);
+        // Wrap the session body frame in a packet frame and return.
+        LazyPacket::new(SupportedBody::Session(frame))
+    }
+
     fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: u8) {
         assert!(self.exchange.is_none());
-        let packet = self.session.build_packet(body.clone());
+        let packet = Self::build_session_packet(self.session.id(), body.clone());
         let inner = self.transport.exchange(packet);
         self.exchange = Some(Exchange {
             inner,
