@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use clap::Clap;
 use log::{error, info, warn};
+use tokio::{io, task};
 
 use crate::client::ClientBuilder;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
@@ -178,4 +179,13 @@ pub(crate) async fn start(opts: &Opts) {
         conn.session().id(),
         conn.session().name().unwrap_or("<none>")
     );
+
+    let (mut reader, mut writer) = io::split(conn);
+    let (mut stdin, mut stdout) = (io::stdin(), io::stdout());
+
+    task::spawn(async move {
+        io::copy(&mut stdin, &mut writer).await.unwrap();
+    });
+
+    io::copy(&mut reader, &mut stdout).await.unwrap();
 }
