@@ -50,7 +50,7 @@ OPTIONS:
         --min-delay <min-delay>                Set the minimum delay in milliseconds between packets [default: 0]
         --query <query>...                     Set the query types for DNS requests (comma-delimited) [default: TXT MX
                                                A]  [possible values: TXT, MX, CNAME, A, AAAA]
-        --recv-queue-size <recv-queue-size>    Set the receive chunk buffer size
+        --recv-queue-size <recv-queue-size>    Set the receive chunk buffer size [default: 16]
         --secret <secret>                      Set the shared secret used for encryption
         --server <server>                      Set the DNS server address, which by default is auto-detected
         --session-id <session-id>              Set the session ID manually

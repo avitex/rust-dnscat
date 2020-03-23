@@ -57,7 +57,7 @@ impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
 struct Exchange<T> {
     inner: T,
     attempt: usize,
-    attempt_max: usize,
+    attempt_max: Option<usize>,
     backoff: Option<Delay>,
     sent_body: SessionBodyBytes,
 }
@@ -72,9 +72,14 @@ where
     transport: T,
     session: Session<E>,
     exchange: Option<Exchange<T::Future>>,
-    exchange_attempt_max: usize,
-    poll_delay: Option<Delay>,
-    poll_interval: Duration,
+    max_retransmits: Option<usize>,
+    // TODO: impl
+    random_delay: bool,
+    // TODO: impl
+    retransmit_backoff: bool,
+    // TODO: impl
+    min_delay: (Duration, Delay),
+    max_delay: (Duration, Option<Delay>),
     send_buf: Bytes,
     recv_buf: Bytes,
     send_task: Option<Waker>,
@@ -112,7 +117,7 @@ where
         &mut self,
         body: SessionBodyBytes,
     ) -> Result<(), ClientError<T::Error, E::Error>> {
-        self.start_exchange(body, self.exchange_attempt_max);
+        self.start_exchange(body, self.max_retransmits);
         future::poll_fn(|cx| self.poll_exchange(cx)).await?;
         Ok(())
     }
@@ -153,7 +158,7 @@ where
 
         let chunk_opt = match result {
             Ok(chunk_opt) => chunk_opt,
-            Err(err) if *attempt == *attempt_max || self.session.is_closed() => {
+            Err(err) if Some(*attempt) == *attempt_max || self.session.is_closed() => {
                 // TODO: notify session we are dead?
                 self.exchange = None;
                 return Poll::Ready(Err(err));
@@ -209,7 +214,7 @@ where
         LazyPacket::new(SupportedBody::Session(frame))
     }
 
-    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: usize) {
+    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: Option<usize>) {
         assert!(self.exchange.is_none());
         let packet = Self::build_session_packet(self.session.id(), body.clone());
         let inner = self.transport.exchange(packet);
@@ -233,7 +238,7 @@ where
         };
         let body = self.session.build_msg(chunk);
         let body = self.session.build_body(body, true)?;
-        Ok(self.start_exchange(body, self.exchange_attempt_max))
+        Ok(self.start_exchange(body, self.max_retransmits))
     }
 
     fn is_recv_queue_full(&self) -> bool {
@@ -244,7 +249,7 @@ where
         self.recv_queue.pop_front().map(|chunk| {
             // Capacity to recv again!
             self.send_task.take().map(Waker::wake);
-            self.poll_delay = None;
+            self.max_delay.1 = None;
             chunk
         })
     }
@@ -285,15 +290,15 @@ where
         }
         // There is no exchange currently running so we set a delay
         // to send an empty chunk to poke the server.
-        if self.poll_delay.is_none() {
-            self.poll_delay = Some(Delay::new(self.poll_interval));
+        if self.max_delay.1.is_none() {
+            self.max_delay.1 = Some(Delay::new(self.max_delay.0));
         }
         // We poll the delay to see if we should send an empty chunk.
-        let poll_delay = self.poll_delay.as_mut().unwrap();
+        let poll_delay = self.max_delay.1.as_mut().unwrap();
         match Pin::new(poll_delay).poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(()) => {
-                self.poll_delay = None;
+                self.max_delay.1 = None;
                 self.start_next_chunk_exchange()?;
                 self.do_poll_recv(cx)
             }
@@ -352,7 +357,7 @@ where
         let body = self.session.build_fin("");
         match self.session.build_body(body, true) {
             Ok(body) => {
-                self.start_exchange(body, 1);
+                self.start_exchange(body, Some(1));
                 self.poll_exchange(cx).map_ok(drop)
             }
             Err(err) => {
@@ -443,16 +448,21 @@ where
 
 ///////////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct ClientBuilder {
     session_id: Option<u16>,
     session_name: Cow<'static, str>,
     initial_sequence: Option<u16>,
     is_command: bool,
-    poll_interval: Duration,
+    min_delay: Duration,
+    max_delay: Duration,
+    random_delay: bool,
     prefer_server_name: bool,
     recv_queue_size: usize,
-    exchange_attempt_max: usize,
+    max_retransmits: Option<usize>,
+    retransmit_backoff: bool,
     packet_trace: bool,
 }
 
@@ -475,34 +485,29 @@ impl ClientBuilder {
         self
     }
 
-    pub fn min_delay(self, _duration: Duration) -> Self {
-        // TODO
+    pub fn min_delay(mut self, duration: Duration) -> Self {
+        self.min_delay = duration;
         self
     }
 
-    pub fn max_delay(self, _duration: Duration) -> Self {
-        // TODO
+    pub fn max_delay(mut self, duration: Duration) -> Self {
+        self.max_delay = duration;
         self
     }
 
-    pub fn random_delay(self, _value: bool) -> Self {
-        // TODO
+    pub fn random_delay(mut self, value: bool) -> Self {
+        self.random_delay = value;
         self
     }
 
-    pub fn max_retransmits(mut self, max: usize) -> Self {
-        assert_ne!(max, 0);
-        self.exchange_attempt_max = max;
+    pub fn max_retransmits(mut self, max: Option<usize>) -> Self {
+        assert_ne!(max, Some(0));
+        self.max_retransmits = max;
         self
     }
 
-    pub fn retransmit_forever(self, _value: bool) -> Self {
-        // TODO
-        self
-    }
-
-    pub fn retransmit_backoff(self, _value: bool) -> Self {
-        // TODO
+    pub fn retransmit_backoff(mut self, value: bool) -> Self {
+        self.retransmit_backoff = value;
         self
     }
 
@@ -585,12 +590,14 @@ impl ClientBuilder {
             transport,
             exchange: None,
             send_task: None,
-            poll_delay: None,
+            retransmit_backoff: self.retransmit_backoff,
+            random_delay: self.random_delay,
             send_buf: Bytes::new(),
             recv_queue: VecDeque::with_capacity(self.recv_queue_size),
             recv_buf: Bytes::new(),
-            poll_interval: self.poll_interval,
-            exchange_attempt_max: self.exchange_attempt_max,
+            min_delay: (self.min_delay, Delay::new(self.min_delay)),
+            max_delay: (self.max_delay, None),
+            max_retransmits: self.max_retransmits,
         };
         client.client_handshake().await
     }
@@ -605,9 +612,12 @@ impl Default for ClientBuilder {
             initial_sequence: None,
             prefer_server_name: false,
             is_command: false,
+            random_delay: false,
             recv_queue_size: 16,
-            exchange_attempt_max: 4,
-            poll_interval: Duration::from_secs(5),
+            retransmit_backoff: true,
+            max_retransmits: Some(4),
+            min_delay: Duration::from_millis(0),
+            max_delay: Duration::from_secs(1),
         }
     }
 }

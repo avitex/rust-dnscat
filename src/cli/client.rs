@@ -87,8 +87,8 @@ pub(crate) struct Opts {
     prefer_server_name: bool,
 
     /// Set the receive chunk buffer size.
-    #[clap(long)]
-    recv_queue_size: Option<usize>,
+    #[clap(long, default_value = "16")]
+    recv_queue_size: usize,
 
     /// If set, display incoming/outgoing DNSCAT2 packets.
     #[clap(long)]
@@ -120,24 +120,26 @@ pub(crate) async fn start(opts: &Opts) {
         }
         server
     };
+
     // Build the DNS endpoint
     let dns_endpoint =
         BasicDnsEndpoint::new_with_defaults(opts.query.clone(), opts.domain.clone()).unwrap();
+
     // Build the DNS client
     let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
         .await
         .unwrap();
+
     // Start building the client connection
     let mut conn = ClientBuilder::default()
         .is_command(opts.command)
         .min_delay(Duration::from_millis(opts.min_delay))
         .max_delay(Duration::from_millis(opts.max_delay))
         .random_delay(opts.random_delay)
-        .max_retransmits(opts.max_retransmits)
-        .retransmit_forever(opts.retransmit_forever)
         .retransmit_backoff(opts.retransmit_backoff)
         .random_delay(opts.random_delay)
         .prefer_server_name(opts.prefer_server_name)
+        .recv_queue_size(opts.recv_queue_size)
         .packet_trace(opts.packet_trace);
 
     if let Some(session_id) = opts.session_id {
@@ -146,8 +148,10 @@ pub(crate) async fn start(opts: &Opts) {
     if let Some(ref session_name) = opts.session_name {
         conn = conn.session_name(session_name.clone())
     }
-    if let Some(recv_queue_size) = opts.recv_queue_size {
-        conn = conn.recv_queue_size(recv_queue_size)
+    if opts.retransmit_forever {
+        conn = conn.max_retransmits(None);
+    } else {
+        conn = conn.max_retransmits(Some(opts.max_retransmits));
     }
 
     info!(
