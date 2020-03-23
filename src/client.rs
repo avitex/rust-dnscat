@@ -4,7 +4,7 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{cmp, io};
 
 use bytes::{Buf, Bytes};
@@ -13,6 +13,7 @@ use futures::io::{AsyncRead, AsyncWrite};
 use futures::{future, ready};
 use futures_timer::Delay;
 use log::{debug, warn};
+use rand::prelude::{Rng, ThreadRng};
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
 
 use crate::encryption::Encryption;
@@ -57,28 +58,26 @@ impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
 struct Exchange<T> {
     inner: T,
     attempt: usize,
-    attempt_max: Option<usize>,
-    backoff: Option<Delay>,
-    sent_body: SessionBodyBytes,
+    delay: Option<Delay>,
+    body: SessionBodyBytes,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Client<T, E = ()>
+pub struct Client<T, E = (), R = ThreadRng>
 where
     T: ExchangeTransport<LazyPacket>,
 {
+    random: R,
     transport: T,
     session: Session<E>,
     exchange: Option<Exchange<T::Future>>,
     max_retransmits: Option<usize>,
-    // TODO: impl
     random_delay: bool,
-    // TODO: impl
     retransmit_backoff: bool,
-    // TODO: impl
-    min_delay: (Duration, Delay),
+    last_transmit: Instant,
+    min_delay: Duration,
     max_delay: (Duration, Option<Delay>),
     send_buf: Bytes,
     recv_buf: Bytes,
@@ -86,11 +85,12 @@ where
     recv_queue: VecDeque<Bytes>,
 }
 
-impl<T, E> Client<T, E>
+impl<T, E, R> Client<T, E, R>
 where
     T: ExchangeTransport<LazyPacket>,
     T::Future: Unpin,
     E: Encryption,
+    R: Rng,
 {
     pub fn session(&self) -> &Session<E> {
         &self.session
@@ -117,7 +117,7 @@ where
         &mut self,
         body: SessionBodyBytes,
     ) -> Result<(), ClientError<T::Error, E::Error>> {
-        self.start_exchange(body, self.max_retransmits);
+        self.start_exchange(body);
         future::poll_fn(|cx| self.poll_exchange(cx)).await?;
         Ok(())
     }
@@ -132,17 +132,16 @@ where
             .expect("attempted to poll empty exchange");
 
         let Exchange {
+            body,
             inner,
+            delay,
             attempt,
-            backoff,
-            sent_body,
-            attempt_max,
         } = exchange;
 
-        if let Some(ref mut backoff_fut) = backoff {
-            ready!(Pin::new(backoff_fut).poll(cx));
-            let packet = Self::build_session_packet(self.session.id(), sent_body.clone());
-            *backoff = None;
+        if let Some(ref mut delay_fut) = delay {
+            ready!(Pin::new(delay_fut).poll(cx));
+            let packet = Self::build_session_packet(self.session.id(), body.clone());
+            *delay = None;
             *attempt += 1;
             *inner = self.transport.exchange(packet);
         }
@@ -158,23 +157,30 @@ where
 
         let chunk_opt = match result {
             Ok(chunk_opt) => chunk_opt,
-            Err(err) if Some(*attempt) == *attempt_max || self.session.is_closed() => {
+            Err(err) if Some(*attempt) >= self.max_retransmits || self.session.is_closed() => {
                 // TODO: notify session we are dead?
                 self.exchange = None;
                 return Poll::Ready(Err(err));
             }
             Err(err) => {
-                let backoff_secs = 2u64.pow(*attempt as u32);
-                let backoff_dur = Duration::from_secs(backoff_secs);
+                let delay_dur = if self.random_delay {
+                    self.random.gen_range(self.min_delay, self.max_delay.0)
+                } else if self.retransmit_backoff {
+                    Duration::from_secs(2u64.pow(*attempt as u32))
+                } else {
+                    self.min_delay
+                };
                 warn!(
                     "retrying exchange after {} secs after {}",
-                    backoff_secs, err
+                    delay_dur.as_secs(),
+                    err
                 );
-                *backoff = Some(Delay::new(backoff_dur));
+                *delay = Some(Delay::new(delay_dur));
                 return self.poll_exchange(cx);
             }
         };
 
+        self.last_transmit = Instant::now();
         self.exchange = None;
 
         if let Some(chunk) = chunk_opt {
@@ -214,16 +220,32 @@ where
         LazyPacket::new(SupportedBody::Session(frame))
     }
 
-    fn start_exchange(&mut self, body: SessionBodyBytes, attempt_max: Option<usize>) {
+    fn next_transmit_delay(&mut self) -> Option<Delay> {
+        let dur_since_last = Instant::now().duration_since(self.last_transmit);
+
+        let dur = if self.random_delay {
+            self.random
+                .gen_range(self.min_delay, self.max_delay.0)
+                .checked_sub(dur_since_last)
+        } else if dur_since_last < self.min_delay {
+            Some(self.min_delay - dur_since_last)
+        } else {
+            None
+        };
+
+        dur.map(Delay::new)
+    }
+
+    fn start_exchange(&mut self, body: SessionBodyBytes) {
         assert!(self.exchange.is_none());
         let packet = Self::build_session_packet(self.session.id(), body.clone());
         let inner = self.transport.exchange(packet);
+        let delay = self.next_transmit_delay();
         self.exchange = Some(Exchange {
             inner,
-            backoff: None,
+            body,
+            delay,
             attempt: 1,
-            attempt_max,
-            sent_body: body,
         });
     }
 
@@ -238,7 +260,7 @@ where
         };
         let body = self.session.build_msg(chunk);
         let body = self.session.build_body(body, true)?;
-        Ok(self.start_exchange(body, self.max_retransmits))
+        Ok(self.start_exchange(body))
     }
 
     fn is_recv_queue_full(&self) -> bool {
@@ -357,7 +379,7 @@ where
         let body = self.session.build_fin("");
         match self.session.build_body(body, true) {
             Ok(body) => {
-                self.start_exchange(body, Some(1));
+                self.start_exchange(body);
                 self.poll_exchange(cx).map_ok(drop)
             }
             Err(err) => {
@@ -368,11 +390,12 @@ where
     }
 }
 
-impl<T, E> AsyncRead for Client<T, E>
+impl<T, E, R> AsyncRead for Client<T, E, R>
 where
     T: ExchangeTransport<LazyPacket> + Unpin,
     T::Future: Unpin,
     E: Encryption + Unpin,
+    R: Rng + Unpin,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -383,11 +406,12 @@ where
     }
 }
 
-impl<T, E> AsyncWrite for Client<T, E>
+impl<T, E, R> AsyncWrite for Client<T, E, R>
 where
     T: ExchangeTransport<LazyPacket> + Unpin,
     T::Future: Unpin,
     E: Encryption + Unpin,
+    R: Rng + Unpin,
 {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -408,11 +432,12 @@ where
 
 ///////////////////////////////////////////////////////////////////////////////
 
-impl<T, E> TokioAsyncRead for Client<T, E>
+impl<T, E, R> TokioAsyncRead for Client<T, E, R>
 where
     T: ExchangeTransport<LazyPacket> + Unpin,
     T::Future: Unpin,
     E: Encryption + Unpin,
+    R: Rng + Unpin,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -423,11 +448,12 @@ where
     }
 }
 
-impl<T, E> TokioAsyncWrite for Client<T, E>
+impl<T, E, R> TokioAsyncWrite for Client<T, E, R>
 where
     T: ExchangeTransport<LazyPacket> + Unpin,
     T::Future: Unpin,
     E: Encryption + Unpin,
+    R: Rng + Unpin,
 {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -448,10 +474,12 @@ where
 
 ///////////////////////////////////////////////////////////////////////////////
 
-///////////////////////////////////////////////////////////////////////////////
-
 #[derive(Debug)]
-pub struct ClientBuilder {
+pub struct ClientBuilder<R = ThreadRng>
+where
+    R: Rng,
+{
+    random: R,
     session_id: Option<u16>,
     session_name: Cow<'static, str>,
     initial_sequence: Option<u16>,
@@ -466,7 +494,28 @@ pub struct ClientBuilder {
     packet_trace: bool,
 }
 
-impl ClientBuilder {
+impl<R> ClientBuilder<R>
+where
+    R: Rng,
+{
+    pub fn default_with_random(random: R) -> Self {
+        Self {
+            random,
+            packet_trace: false,
+            session_id: None,
+            session_name: Cow::Borrowed(""),
+            initial_sequence: None,
+            prefer_server_name: false,
+            is_command: false,
+            random_delay: false,
+            recv_queue_size: 16,
+            retransmit_backoff: true,
+            max_retransmits: Some(20),
+            min_delay: Duration::from_secs(0),
+            max_delay: Duration::from_secs(1),
+        }
+    }
+
     pub fn session_id(mut self, id: u16) -> Self {
         self.session_id = Some(id);
         self
@@ -535,7 +584,7 @@ impl ClientBuilder {
         self,
         transport: T,
         encryption: E,
-    ) -> Result<Client<T, E>, ClientError<T::Error, E::Error>>
+    ) -> Result<Client<T, E, R>, ClientError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,
@@ -547,7 +596,7 @@ impl ClientBuilder {
     pub async fn connect_insecure<T>(
         self,
         transport: T,
-    ) -> Result<Client<T>, ClientError<T::Error, Infallible>>
+    ) -> Result<Client<T, (), R>, ClientError<T::Error, Infallible>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,
@@ -559,7 +608,7 @@ impl ClientBuilder {
         self,
         transport: T,
         encryption: Option<E>,
-    ) -> Result<Client<T, E>, ClientError<T::Error, E::Error>>
+    ) -> Result<Client<T, E, R>, ClientError<T::Error, E::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,
@@ -586,6 +635,7 @@ impl ClientBuilder {
             self.packet_trace,
         );
         let client = Client {
+            random: self.random,
             session,
             transport,
             exchange: None,
@@ -595,7 +645,8 @@ impl ClientBuilder {
             send_buf: Bytes::new(),
             recv_queue: VecDeque::with_capacity(self.recv_queue_size),
             recv_buf: Bytes::new(),
-            min_delay: (self.min_delay, Delay::new(self.min_delay)),
+            last_transmit: Instant::now(),
+            min_delay: self.min_delay,
             max_delay: (self.max_delay, None),
             max_retransmits: self.max_retransmits,
         };
@@ -605,19 +656,6 @@ impl ClientBuilder {
 
 impl Default for ClientBuilder {
     fn default() -> Self {
-        Self {
-            packet_trace: false,
-            session_id: None,
-            session_name: Cow::Borrowed(""),
-            initial_sequence: None,
-            prefer_server_name: false,
-            is_command: false,
-            random_delay: false,
-            recv_queue_size: 16,
-            retransmit_backoff: true,
-            max_retransmits: Some(4),
-            min_delay: Duration::from_millis(0),
-            max_delay: Duration::from_secs(1),
-        }
+        Self::default_with_random(ThreadRng::default())
     }
 }
