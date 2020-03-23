@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use clap::{AppSettings, Clap};
+use clap::Clap;
 use futures::future;
 use log::{error, info, warn};
 use tokio::{io, process};
@@ -11,7 +11,7 @@ use crate::client::ClientBuilder;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
 
 #[derive(Clap, Debug)]
-#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>", setting = AppSettings::TrailingVarArg)]
+#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
 pub(crate) struct Opts {
     /// DNS endpoint name.
     domain: Name,
@@ -98,11 +98,8 @@ pub(crate) struct Opts {
     command: bool,
 
     /// Execute a process and attach stdin/stdout.
-    #[clap(long, short)]
-    exec: bool,
-
-    #[clap(last = true, multiple = true, allow_hyphen_values = true)]
-    exec_opts: Vec<String>,
+    #[clap(long, short, multiple = true, allow_hyphen_values = true)]
+    exec: Vec<String>,
 }
 
 pub(crate) async fn start(opts: &Opts) {
@@ -176,13 +173,9 @@ pub(crate) async fn start(opts: &Opts) {
 
     let (reader, writer) = io::split(conn);
 
-    if opts.exec {
-        let process = opts
-            .exec_opts
-            .get(1)
-            .expect("exec specified with no process");
+    if let Some(process) = opts.exec.get(0) {
         let result = process::Command::new(process)
-            .args(&opts.exec_opts[1..])
+            .args(&opts.exec[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn();
