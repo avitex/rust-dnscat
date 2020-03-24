@@ -10,7 +10,7 @@ required-features = ["cli"]
 
 [features]
 default = ["cli"]
-cli = ["clap", "dotenv", "env_logger", "trust-dns-resolver", "tokio/full"]
+cli = ["structopt", "dotenv", "env_logger", "trust-dns-resolver", "tokio/full"]
 
 [dependencies]
 log = "~0.4"
@@ -25,7 +25,8 @@ rand = "~0.7"
 itertools = "~0.8"
 arrayvec = "~0.5"
 failure = "~0.1"
-clap = { git = "https://github.com/clap-rs/clap", optional = true }
+
+structopt = { version = "~0.3", optional = true }
 env_logger = { version = "~0.7", optional = true }
 dotenv = { version = "~0.15", optional = true }
 trust-dns-resolver = { version = "~0.19", optional = true }

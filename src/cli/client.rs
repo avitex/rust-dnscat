@@ -3,30 +3,30 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Clap;
 use futures::future;
 use log::{error, info, warn};
+use structopt::StructOpt;
 use tokio::{io, process};
 
 use crate::client::ClientBuilder;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
 
-#[derive(Clap, Debug)]
-#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+#[derive(StructOpt, Debug)]
+#[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
 pub(crate) struct Opts {
     /// DNS endpoint name.
     domain: Name,
 
     /// Set the DNS server address, which by default is auto-detected.
-    #[clap(long)]
+    #[structopt(long)]
     server: Option<SocketAddr>,
 
     /// Set the query types for DNS requests (comma-delimited).
-    #[clap(
+    #[structopt(
         long,
         multiple = true,
         use_delimiter = true,
-        default_values = &["TXT", "MX", "A"],
+        default_value = "TXT,MX,A",
         possible_values = &["TXT", "MX", "CNAME", "A", "AAAA"]
     )]
     query: Vec<RecordType>,
@@ -35,7 +35,7 @@ pub(crate) struct Opts {
     ///
     /// This can be set to avoid flooding a network or server with
     /// DNS requests when sending a larger amount of data.
-    #[clap(long, default_value = "0")]
+    #[structopt(long, default_value = "0")]
     min_delay: u64,
 
     /// Set the maximum delay in milliseconds between packets.
@@ -43,63 +43,63 @@ pub(crate) struct Opts {
     /// If no data has been sent to the server after this delay,
     /// an empty packet will be sent to poll for any data waiting
     /// to be received.
-    #[clap(long, default_value = "1000")]
+    #[structopt(long, default_value = "1000")]
     max_delay: u64,
 
     /// If set, will select a random delay for each transmit between
     /// <min-delay> and <max-delay>.
-    #[clap(long)]
+    #[structopt(long)]
     random_delay: bool,
 
     /// Set the max re-transmits attempted before assuming the
     /// server is dead and aborting.
-    #[clap(long, default_value = "20")]
+    #[structopt(long, default_value = "20")]
     max_retransmits: usize,
 
     /// If set, will re-transmit forever until a server sends a
     /// valid response.
-    #[clap(long, conflicts_with = "max_retransmits")]
+    #[structopt(long, conflicts_with = "max_retransmits")]
     retransmit_forever: bool,
 
     /// If set, will exponentially backoff in delay from
     /// re-attempting a transmit.
-    #[clap(long, conflicts_with = "retransmit_forever")]
+    #[structopt(long, conflicts_with = "retransmit_forever")]
     retransmit_backoff: bool,
 
     /// Set the shared secret used for encryption.
-    #[clap(long, required_unless = "insecure")]
+    #[structopt(long, required_unless = "insecure")]
     secret: Option<String>,
 
     /// If set, will turn off encryption/authentication.
-    #[clap(long, conflicts_with = "secret")]
+    #[structopt(long, conflicts_with = "secret")]
     insecure: bool,
 
     /// Set the session ID manually.
-    #[clap(long)]
+    #[structopt(long)]
     session_id: Option<u16>,
 
     /// Set the session name manually.
-    #[clap(long)]
+    #[structopt(long)]
     session_name: Option<String>,
 
     /// If set, prefer the server's session name.
-    #[clap(long)]
+    #[structopt(long)]
     prefer_server_name: bool,
 
     /// Set the receive chunk buffer size.
-    #[clap(long, default_value = "16")]
+    #[structopt(long, default_value = "16")]
     recv_queue_size: usize,
 
     /// If set, display incoming/outgoing DNSCAT2 packets.
-    #[clap(long)]
+    #[structopt(long)]
     packet_trace: bool,
 
     /// If set, indicate to the server this is a command session.
-    #[clap(long)]
+    #[structopt(long)]
     command: bool,
 
     /// Execute a process and attach stdin/stdout.
-    #[clap(long, short, multiple = true, allow_hyphen_values = true)]
+    #[structopt(long, short, multiple = true, allow_hyphen_values = true)]
     exec: Vec<String>,
 }
 

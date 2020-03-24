@@ -1,18 +1,18 @@
 mod client;
 
-use clap::Clap;
+use structopt::StructOpt;
 
-#[derive(Clap, Debug)]
-#[clap(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+#[derive(StructOpt, Debug)]
+#[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
 pub(crate) struct Opts {
-    #[clap(subcommand)]
+    #[structopt(subcommand)]
     subcmd: SubCommand,
 }
 
-#[derive(Clap, Debug)]
+#[derive(StructOpt, Debug)]
 enum SubCommand {
     /// DNSCAT client
-    #[clap(name = "client")]
+    #[structopt(name = "client")]
     Client(client::Opts),
 }
 
@@ -20,7 +20,7 @@ pub async fn start() {
     dotenv::dotenv().ok();
     env_logger::init();
 
-    let opts = Opts::parse();
+    let opts = Opts::from_args();
 
     match opts.subcmd {
         SubCommand::Client(ref client_opts) => client::start(client_opts).await,
