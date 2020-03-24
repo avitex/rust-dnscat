@@ -14,8 +14,8 @@ use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType}
 #[derive(StructOpt, Debug)]
 #[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
 pub(crate) struct Opts {
-    /// DNS endpoint name.
-    domain: Name,
+    /// DNS name constant.
+    constant: Name,
 
     /// Set the DNS server address, which by default is auto-detected.
     #[structopt(long)]
@@ -113,7 +113,7 @@ pub(crate) async fn start(opts: &Opts) {
             Ok(None) => panic!("no valid system DNS servers"),
             Err(err) => panic!("failed to load system DNS config: {}", err),
         };
-        if !opts.domain.is_fqdn() {
+        if !opts.constant.is_fqdn() {
             // Unless you've changed system configuration to point to a
             // DNSCAT2 server, this will most certainly not work.
             warn!("non-FQDN is being used with a system DNS server");
@@ -123,7 +123,7 @@ pub(crate) async fn start(opts: &Opts) {
 
     // Build the DNS endpoint
     let dns_endpoint =
-        BasicDnsEndpoint::new_with_defaults(opts.query.clone(), opts.domain.clone()).unwrap();
+        BasicDnsEndpoint::new_with_defaults(opts.query.clone(), opts.constant.clone()).unwrap();
 
     // Build the DNS client
     let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
@@ -156,7 +156,7 @@ pub(crate) async fn start(opts: &Opts) {
 
     info!(
         "connecting to `{}` using `{}`",
-        dns_server_addr, opts.domain
+        dns_server_addr, opts.constant
     );
 
     let conn = if let Some(ref _secret) = opts.secret {
