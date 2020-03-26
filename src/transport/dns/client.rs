@@ -160,6 +160,9 @@ where
             }
             other => panic!("unsupported record type: {:?}", other),
         };
+        if bytes.is_empty() {
+            return Err(DnsTransportError::NoData);
+        }
         let datagram = D::decode(&mut bytes).map_err(DatagramError::Decode)?;
         if bytes.is_empty() {
             Ok(datagram)

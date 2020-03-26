@@ -8,8 +8,11 @@ use log::{error, info, warn};
 use structopt::StructOpt;
 use tokio::{io, process};
 
-use crate::client::ClientBuilder;
+use crate::client::{Client, ClientBuilder};
+use crate::encryption::{Encryption, StandardEncryption};
+use crate::packet::LazyPacket;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
+use crate::transport::ExchangeTransport;
 
 #[derive(StructOpt, Debug)]
 #[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
@@ -159,26 +162,38 @@ pub(crate) async fn start(opts: &Opts) {
         dns_server_addr, opts.constant
     );
 
-    let conn = if let Some(ref _secret) = opts.secret {
-        unimplemented!()
+    let result = if let Some(ref secret) = opts.secret {
+        let preshared_key = Some(Vec::from(secret.clone()));
+        let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
+        match conn.connect(dns_client, encryption).await {
+            Ok(client) => Ok(start_session(client, opts).await),
+            Err(err) => Err(err),
+        }
     } else {
         assert!(opts.insecure);
         match conn.connect_insecure(dns_client).await {
-            Ok(conn) => conn,
-            Err(err) => {
-                error!("failed to connect with {}", err);
-                return;
-            }
+            Ok(client) => Ok(start_session(client, opts).await),
+            Err(err) => Err(err),
         }
     };
+    if let Err(err) = result {
+        error!("failed to connect with {}", err)
+    }
+}
 
+async fn start_session<T, E>(client: Client<T, E>, opts: &Opts)
+where
+    T: ExchangeTransport<LazyPacket> + Unpin,
+    T::Future: Unpin,
+    E: Encryption + Unpin,
+{
     info!(
         "connected with session (id: {}, name: {})",
-        conn.session().id(),
-        conn.session().name().unwrap_or("<none>")
+        client.session().id(),
+        client.session().name().unwrap_or("<none>")
     );
 
-    let (reader, writer) = io::split(conn);
+    let (reader, writer) = io::split(client);
 
     if let Some(process) = opts.exec.get(0) {
         let result = process::Command::new(process)

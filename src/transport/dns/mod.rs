@@ -29,6 +29,8 @@ pub enum DnsTransportError<D: Fail> {
     Endpoint(DnsEndpointError),
     #[fail(display = "No answers were returned")]
     NoAnswers,
+    #[fail(display = "No data was returned")]
+    NoData,
 }
 
 impl<D: Fail> From<ProtoError> for DnsTransportError<D> {

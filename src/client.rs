@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -16,37 +15,29 @@ use log::{debug, warn};
 use rand::prelude::{Rng, ThreadRng};
 use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
 
-use crate::encryption::Encryption;
+use crate::encryption::{Encryption, NoEncryption};
 use crate::packet::*;
 use crate::session::{Session, SessionError};
 use crate::transport::ExchangeTransport;
 
 #[derive(Debug, Fail)]
-pub enum ClientError<T: Fail, E: Fail> {
+pub enum ClientError<T: Fail> {
     #[fail(display = "Transport error: {}", _0)]
     Transport(T),
     #[fail(display = "Session error: {}", _0)]
-    Session(SessionError<E>),
-    #[fail(
-        display = "Unexpected session ID (expected: {}, got: {})",
-        expected, actual
-    )]
-    UnexpectedId {
-        expected: SessionId,
-        actual: SessionId,
-    },
+    Session(SessionError),
     #[fail(display = "Unexpected packet kind `{:?}`", _0)]
     UnexpectedKind(PacketKind),
 }
 
-impl<T: Fail, E: Fail> From<SessionError<E>> for ClientError<T, E> {
-    fn from(err: SessionError<E>) -> Self {
+impl<T: Fail> From<SessionError> for ClientError<T> {
+    fn from(err: SessionError) -> Self {
         ClientError::Session(err)
     }
 }
 
-impl<T: Fail, E: Fail> From<ClientError<T, E>> for io::Error {
-    fn from(err: ClientError<T, E>) -> Self {
+impl<T: Fail> From<ClientError<T>> for io::Error {
+    fn from(err: ClientError<T>) -> Self {
         // TODO: better?
         io::Error::new(io::ErrorKind::Other, err.compat())
     }
@@ -59,7 +50,7 @@ struct Exchange<T> {
     inner: T,
     attempt: usize,
     delay: Option<Delay>,
-    body: SessionBodyBytes,
+    packet: Packet<SessionBodyBytes>,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -96,43 +87,54 @@ where
         &self.session
     }
 
-    async fn client_handshake(mut self) -> Result<Self, ClientError<T::Error, E::Error>> {
+    async fn client_handshake(mut self) -> Result<Self, ClientError<T::Error>> {
         debug!("starting client handshake");
+
         if self.session.is_encrypted() {
             self = self.client_encryption_handshake().await?;
         } else {
             debug!("skipping encryption handshake");
         }
-        let body = self.session.build_syn();
-        let body = self.session.build_body(body, true)?;
-        self.basic_exchange(body).await?;
+
+        let packet = self.session.build_syn()?;
+        self.basic_exchange(packet).await?;
+
         Ok(self)
     }
 
-    async fn client_encryption_handshake(self) -> Result<Self, ClientError<T::Error, E::Error>> {
-        unimplemented!()
+    async fn client_encryption_handshake(mut self) -> Result<Self, ClientError<T::Error>> {
+        debug!("starting encryption handshake");
+
+        let packet = self.session.build_enc_init()?;
+        self.basic_exchange(packet).await?;
+
+        debug!("authenticating peer...");
+
+        let packet = self.session.build_enc_auth()?;
+        self.basic_exchange(packet).await?;
+
+        debug!("peer authenticated");
+
+        Ok(self)
     }
 
     async fn basic_exchange(
         &mut self,
-        body: SessionBodyBytes,
-    ) -> Result<(), ClientError<T::Error, E::Error>> {
-        self.start_exchange(body);
+        packet: Packet<SessionBodyBytes>,
+    ) -> Result<(), ClientError<T::Error>> {
+        self.start_exchange(packet);
         future::poll_fn(|cx| self.poll_exchange(cx)).await?;
         Ok(())
     }
 
-    fn poll_exchange(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<bool, ClientError<T::Error, E::Error>>> {
+    fn poll_exchange(&mut self, cx: &mut Context<'_>) -> Poll<Result<bool, ClientError<T::Error>>> {
         let exchange = self
             .exchange
             .as_mut()
             .expect("attempted to poll empty exchange");
 
         let Exchange {
-            body,
+            packet,
             inner,
             delay,
             attempt,
@@ -140,19 +142,18 @@ where
 
         if let Some(ref mut delay_fut) = delay {
             ready!(Pin::new(delay_fut).poll(cx));
-            let packet =
-                Self::build_session_packet(&mut self.random, self.session.id(), body.clone());
+            let packet = self.session.prepare_retransmit(packet.clone());
             *delay = None;
             *attempt += 1;
-            *inner = self.transport.exchange(packet);
+            *inner = self.transport.exchange(packet.translate());
         }
 
         let result = match ready!(Pin::new(inner).poll(cx)) {
             // TODO: destroy session if fatal?
             Err(err) => Err(ClientError::Transport(err)),
-            Ok(packet) => match Self::parse_session_packet(self.session.id(), packet) {
-                Ok(body) => self.session.handle_inbound(body).map_err(Into::into),
-                Err(err) => Err(err),
+            Ok(packet) => match (packet.kind(), packet.into_session()) {
+                (_, Some(packet)) => self.session.handle_inbound(packet).map_err(Into::into),
+                (kind, None) => Err(ClientError::UnexpectedKind(kind)),
             },
         };
 
@@ -192,39 +193,6 @@ where
         }
     }
 
-    fn parse_session_packet(
-        session_id: SessionId,
-        packet: LazyPacket,
-    ) -> Result<SessionBodyBytes, ClientError<T::Error, E::Error>> {
-        let kind = packet.kind();
-        // Consume the received packet into a session frame if applicable
-        if let Some(frame) = packet.into_body().into_session_frame() {
-            // Check the session ID returned matches our session ID
-            if session_id != frame.session_id() {
-                Err(ClientError::UnexpectedId {
-                    expected: session_id,
-                    actual: frame.session_id(),
-                })
-            } else {
-                // Return the framed session body bytes.
-                Ok(frame.into_body().into())
-            }
-        } else {
-            Err(ClientError::UnexpectedKind(kind))
-        }
-    }
-
-    fn build_session_packet(
-        random: &mut R,
-        session_id: SessionId,
-        body: SessionBodyBytes,
-    ) -> LazyPacket {
-        // Wrap the encoded session body in a session body frame.
-        let frame = SessionBodyFrame::new(session_id, body);
-        // Wrap the session body frame in a packet frame and return.
-        LazyPacket::new(random.gen(), SupportedBody::Session(frame))
-    }
-
     fn next_transmit_delay(&mut self) -> Option<Delay> {
         let dur_since_last = Instant::now().duration_since(self.last_transmit);
 
@@ -241,20 +209,19 @@ where
         dur.map(Delay::new)
     }
 
-    fn start_exchange(&mut self, body: SessionBodyBytes) {
+    fn start_exchange(&mut self, packet: Packet<SessionBodyBytes>) {
         assert!(self.exchange.is_none());
-        let packet = Self::build_session_packet(&mut self.random, self.session.id(), body.clone());
-        let inner = self.transport.exchange(packet);
+        let inner = self.transport.exchange(packet.clone().translate());
         let delay = self.next_transmit_delay();
         self.exchange = Some(Exchange {
             inner,
-            body,
+            packet,
             delay,
             attempt: 1,
         });
     }
 
-    fn start_next_chunk_exchange(&mut self) -> Result<(), ClientError<T::Error, E::Error>> {
+    fn start_next_chunk_exchange(&mut self) -> Result<(), ClientError<T::Error>> {
         let chunk = if self.send_buf.is_empty() {
             debug!("sending empty chunk");
             Bytes::new()
@@ -263,9 +230,8 @@ where
             let chunk_len = self.session.calc_chunk_len(self.send_buf.len(), budget);
             self.send_buf.split_to(chunk_len as usize)
         };
-        let body = self.session.build_msg(chunk);
-        let body = self.session.build_body(body, true)?;
-        Ok(self.start_exchange(body))
+        let packet = self.session.build_msg(chunk)?;
+        Ok(self.start_exchange(packet))
     }
 
     fn is_recv_queue_full(&self) -> bool {
@@ -290,7 +256,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
         buf: &mut [u8],
-    ) -> Poll<Result<usize, ClientError<T::Error, E::Error>>> {
+    ) -> Poll<Result<usize, ClientError<T::Error>>> {
         if self.recv_buf.is_empty() {
             self.recv_buf = ready!(self.do_poll_recv(cx))?;
         }
@@ -299,10 +265,7 @@ where
         Poll::Ready(Ok(len))
     }
 
-    fn do_poll_recv(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<Bytes, ClientError<T::Error, E::Error>>> {
+    fn do_poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<Bytes, ClientError<T::Error>>> {
         // First see if we have anything in the recv queue.
         if let Some(chunk) = self.recv_queue_pop() {
             return Poll::Ready(Ok(chunk));
@@ -336,7 +299,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
         buf: &[u8],
-    ) -> Poll<Result<usize, ClientError<T::Error, E::Error>>> {
+    ) -> Poll<Result<usize, ClientError<T::Error>>> {
         if self.is_recv_queue_full() {
             self.send_task = Some(cx.waker().clone());
             return Poll::Pending;
@@ -351,10 +314,7 @@ where
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn do_poll_flush(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), ClientError<T::Error, E::Error>>> {
+    fn do_poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ClientError<T::Error>>> {
         // If there is an exchange already happening we poll
         // it to completion.
         if self.exchange.is_some() {
@@ -370,10 +330,7 @@ where
         }
     }
 
-    fn do_poll_close(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), ClientError<T::Error, E::Error>>> {
+    fn do_poll_close(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ClientError<T::Error>>> {
         if self.exchange.is_none() && self.session.is_closed() {
             return Poll::Ready(Ok(()));
         }
@@ -381,10 +338,9 @@ where
         if let Err(err) = ready!(self.do_poll_flush(cx)) {
             warn!("ignored error while closing {}", err);
         }
-        let body = self.session.build_fin("");
-        match self.session.build_body(body, true) {
-            Ok(body) => {
-                self.start_exchange(body);
+        match self.session.build_fin("") {
+            Ok(packet) => {
+                self.start_exchange(packet);
                 self.poll_exchange(cx).map_ok(drop)
             }
             Err(err) => {
@@ -589,7 +545,7 @@ where
         self,
         transport: T,
         encryption: E,
-    ) -> Result<Client<T, E, R>, ClientError<T::Error, E::Error>>
+    ) -> Result<Client<T, E, R>, ClientError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,
@@ -601,7 +557,7 @@ where
     pub async fn connect_insecure<T>(
         self,
         transport: T,
-    ) -> Result<Client<T, (), R>, ClientError<T::Error, Infallible>>
+    ) -> Result<Client<T, NoEncryption, R>, ClientError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,
@@ -613,7 +569,7 @@ where
         mut self,
         transport: T,
         encryption: Option<E>,
-    ) -> Result<Client<T, E, R>, ClientError<T::Error, E::Error>>
+    ) -> Result<Client<T, E, R>, ClientError<T::Error>>
     where
         T: ExchangeTransport<LazyPacket>,
         T::Future: Unpin,

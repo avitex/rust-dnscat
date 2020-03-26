@@ -9,7 +9,8 @@ name = "dnscat"
 required-features = ["cli"]
 
 [features]
-default = ["cli"]
+default = ["encryption"]
+encryption = ["ring", "sha3", "digest", "constant_time_eq", "secstr", "salsa20"]
 cli = ["structopt", "dotenv", "env_logger", "trust-dns-resolver", "tokio/full"]
 
 [dependencies]
@@ -26,10 +27,22 @@ itertools = "~0.8"
 arrayvec = "~0.5"
 failure = "~0.1"
 
+# CLI
 structopt = { version = "~0.3", optional = true }
 env_logger = { version = "~0.7", optional = true }
 dotenv = { version = "~0.15", optional = true }
 trust-dns-resolver = { version = "~0.19", optional = true }
 
+# Encryption
+digest = { version = "0.8", optional = true }
+sha3 = { version = "0.8", optional = true }
+salsa20 = { version = "0.4", optional = true }
+ring = { version = "0.16", optional = true }
+constant_time_eq = { version = "0.1", optional = true }
+secstr = { version = "0.4", optional = true }
+
 [dev-dependencies]
+tokio = { version = "~0.2", features = ["full"] }
 rand_pcg = "~0.2"
+dotenv = "~0.15"
+env_logger = "~0.7"

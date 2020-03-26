@@ -8,7 +8,7 @@ pub trait Encode {
     /// # Panics
     ///
     /// Panics if self does not have enough capacity to encode into.
-    fn encode<B: BufMut>(&self, buf: &mut B);
+    fn encode<B: BufMut + ?Sized>(&self, buf: &mut B);
 }
 
 /// Synchronously decode from a buffer.

@@ -1,10 +1,11 @@
 use std::mem::size_of;
 use std::str::Utf8Error;
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use failure::Fail;
 
-use crate::util::{hex, StringBytes};
+use crate::util::generic_array::{ArrayLength, GenericArray};
+use crate::util::StringBytes;
 
 #[derive(Debug, Clone, PartialEq, Fail)]
 #[fail(display = "Needed length {}", _0)]
@@ -57,20 +58,16 @@ where
     Ok(string)
 }
 
-pub fn np_hex_string<E>(bytes: &mut Bytes, len: usize) -> Result<Bytes, E>
-where
-    E: From<Needed>,
-    E: From<hex::DecodeError>,
-{
-    let bytes = split_to(bytes, len)?;
-    let slice = bytes.split(|x| *x == 0).next().unwrap();
-    let mut raw_bytes = BytesMut::with_capacity(len / 2);
-    hex::decode_into_buf(&mut raw_bytes, slice, false)?;
-    Ok(raw_bytes.freeze())
-}
-
 #[inline]
 pub fn split_to(bytes: &mut Bytes, len: usize) -> Result<Bytes, Needed> {
     require_len(bytes, len)?;
     Ok(bytes.split_to(len))
+}
+
+#[inline]
+pub fn split_to_array<N: ArrayLength<u8>>(
+    bytes: &mut Bytes,
+) -> Result<GenericArray<u8, N>, Needed> {
+    let bytes = split_to(bytes, size_of::<N::ArrayType>())?;
+    Ok(GenericArray::clone_from_slice(&bytes[..]))
 }
