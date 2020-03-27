@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
 
 use crate::encryption::{Encryption, NoEncryption};
 use crate::packet::*;
-use crate::session::{Session, SessionError};
+use crate::session::{Session, SessionError, SessionRole};
 use crate::transport::ExchangeTransport;
 
 #[derive(Debug, Fail)]
@@ -587,7 +587,7 @@ where
             session_name,
             Sequence(init_seq),
             self.is_command,
-            true,
+            SessionRole::Client,
             encryption,
             self.prefer_server_name,
             self.packet_trace,

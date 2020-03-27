@@ -309,7 +309,7 @@ pub enum PacketDecodeError {
     UnexpectedKind(PacketKind),
     /// Unknown encryption packet kind.
     #[fail(display = "Unknown encryption subtype: {}", _0)]
-    UnknownEncKind(u8),
+    UnknownEncKind(u16),
     /// Incomplete input error.
     #[fail(display = "Incomplete ({})", _0)]
     Incomplete(Needed),

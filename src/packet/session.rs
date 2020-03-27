@@ -540,7 +540,7 @@ impl EncBody {
 
 impl Encode for EncBody {
     fn encode<B: BufMut + ?Sized>(&self, b: &mut B) {
-        b.put_u8(self.body.kind() as u8);
+        b.put_u16(self.body.kind() as u16);
         b.put_u16(self.cryp_flags);
         self.body.encode(b);
     }
@@ -550,8 +550,8 @@ impl Decode for EncBody {
     type Error = PacketDecodeError;
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
-        let enc_kind = parse::be_u8(b)?;
-        let enc_kind = EncBodyKind::from_u8(enc_kind)
+        let enc_kind = parse::be_u16(b)?;
+        let enc_kind = EncBodyKind::from_u16(enc_kind)
             .ok_or_else(|| PacketDecodeError::UnknownEncKind(enc_kind))?;
         let cryp_flags = parse::be_u16(b)?;
         let body = EncBodyVariant::decode_kind(enc_kind, b)?;
@@ -631,7 +631,7 @@ pub enum EncBodyKind {
 
 impl EncBodyKind {
     /// Converts a encryption packet kind value to a supported variant.
-    pub fn from_u8(kind: u8) -> Option<Self> {
+    pub fn from_u16(kind: u16) -> Option<Self> {
         match kind {
             0x00 => Some(Self::INIT),
             0x01 => Some(Self::AUTH),
@@ -750,7 +750,7 @@ mod tests {
                 0x00, 0x01, // Packet ID
                 0x03, // Packet kind
                 0x00, 0x01, // Session ID
-                EncBodyKind::INIT as u8, // Encryption kind
+                0x00, EncBodyKind::INIT as u8, // Encryption kind
                 0x00, 0x02, // Crypto flags
                 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, // Pubkey X (1)
                 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, // Pubkey X (2)
@@ -774,7 +774,7 @@ mod tests {
                 0x00, 0x01, // Packet ID
                 0x03, // Packet kind
                 0x00, 0x01, // Session ID
-                EncBodyKind::AUTH as u8, // Encryption kind
+                0x00, EncBodyKind::AUTH as u8, // Encryption kind
                 0x00, 0x02, // Crypto flags
                 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, // Auth (1)
                 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, // Auth (2)
