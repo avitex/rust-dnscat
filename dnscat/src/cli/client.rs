@@ -177,6 +177,9 @@ impl App {
             }
         } else {
             let preshared_key = self.secret.clone().map(Vec::from);
+            if preshared_key.is_none() {
+                warn!("no preshared secret! (use `--secret <secret>`)");
+            }
             let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
             match conn.connect(dns_client, encryption).await {
                 Ok(client) => Ok(start_session(client, self).await),
