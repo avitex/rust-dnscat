@@ -108,12 +108,12 @@ where
         let packet = self.session.build_enc_init()?;
         self.basic_exchange(packet).await?;
 
-        debug!("authenticating peer...");
+        debug!("authenticating session...");
 
         let packet = self.session.build_enc_auth()?;
         self.basic_exchange(packet).await?;
 
-        debug!("peer authenticated");
+        debug!("authenticated");
 
         Ok(self)
     }
@@ -231,7 +231,8 @@ where
             self.send_buf.split_to(chunk_len as usize)
         };
         let packet = self.session.build_msg(chunk)?;
-        Ok(self.start_exchange(packet))
+        self.start_exchange(packet);
+        Ok(())
     }
 
     fn is_recv_queue_full(&self) -> bool {
@@ -241,7 +242,9 @@ where
     fn recv_queue_pop(&mut self) -> Option<Bytes> {
         self.recv_queue.pop_front().map(|chunk| {
             // Capacity to recv again!
-            self.send_task.take().map(Waker::wake);
+            if let Some(waker) = self.send_task.take() {
+                waker.wake();
+            }
             self.max_delay.1 = None;
             chunk
         })
@@ -521,7 +524,7 @@ where
         self
     }
 
-    pub fn is_command(mut self, value: bool) -> Self {
+    pub fn command(mut self, value: bool) -> Self {
         self.is_command = value;
         self
     }

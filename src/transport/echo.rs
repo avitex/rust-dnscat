@@ -21,17 +21,13 @@ impl ExchangeTransport<LazyPacket> for PacketEchoTransport {
             let tx_body = SupportedSessionBody::decode_body(&head, &mut body.0).unwrap();
             let rx_body = match tx_body {
                 SupportedSessionBody::Syn(syn) => {
-                    let syn = SynBody::new(
-                        Sequence(rand::random()),
-                        syn.is_command(),
-                        syn.is_encrypted(),
-                    );
+                    let syn = SynBody::new(Sequence(rand::random()), syn.is_command());
                     SupportedSessionBody::Syn(syn)
                 }
                 SupportedSessionBody::Msg(mut msg) => {
                     let data_len = msg.data().len() as u8;
-                    msg.set_ack(msg.seq().add(data_len));
-                    msg.set_seq(msg.ack().add(data_len));
+                    msg.set_ack(msg.seq().add_data(data_len));
+                    msg.set_seq(msg.ack().add_data(data_len));
                     SupportedSessionBody::Msg(msg)
                 }
                 other => other,

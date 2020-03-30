@@ -42,6 +42,7 @@ pub struct PingBody {
 
 impl PingBody {
     /// Constructs a new `PING` packet.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             data: StringBytes::new(),

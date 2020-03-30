@@ -135,7 +135,7 @@ pub(crate) async fn start(opts: &Opts) {
 
     // Start building the client connection
     let mut conn = ClientBuilder::default()
-        .is_command(opts.command)
+        .command(opts.command)
         .min_delay(Duration::from_millis(opts.min_delay))
         .max_delay(Duration::from_millis(opts.max_delay))
         .random_delay(opts.random_delay)

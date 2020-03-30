@@ -12,8 +12,28 @@ pub type SessionId = u16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionHeader {
-    pub packet: PacketHeader,
+    packet: PacketHeader,
     pub session_id: SessionId,
+}
+
+impl SessionHeader {
+    pub const fn new(packet_id: PacketId, packet_kind: PacketKind, session_id: SessionId) -> Self {
+        Self {
+            packet: PacketHeader {
+                id: packet_id,
+                kind: packet_kind,
+            },
+            session_id,
+        }
+    }
+
+    pub const fn len() -> usize {
+        PacketHeader::len() + mem::size_of::<SessionId>()
+    }
+
+    pub fn set_packet_id(&mut self, packet_id: PacketId) {
+        self.packet.id = packet_id
+    }
 }
 
 impl Encode for SessionHeader {
@@ -134,7 +154,7 @@ impl PacketBody for SupportedSessionBody {
             PacketKind::MSG => MsgBody::decode(b).map(Self::Msg),
             PacketKind::FIN => FinBody::decode(b).map(Self::Fin),
             PacketKind::ENC => EncBody::decode(b).map(Self::Enc),
-            other => Err(PacketDecodeError::UnexpectedKind(other)),
+            other => Err(PacketDecodeError::UnexpectedKind(other.into())),
         }
     }
 }
@@ -152,7 +172,7 @@ pub struct SynBody {
 
 impl SynBody {
     /// Constructs a new `SYN` packet.
-    pub fn new<S>(init_seq: S, command: bool, encrypted: bool) -> Self
+    pub fn new<S>(init_seq: S, command: bool) -> Self
     where
         S: Into<Sequence>,
     {
@@ -160,9 +180,6 @@ impl SynBody {
         let init_seq = init_seq.into();
         if command {
             flags.insert(PacketFlags::COMMAND);
-        }
-        if encrypted {
-            flags.insert(PacketFlags::ENCRYPTED);
         }
         Self {
             init_seq,
@@ -184,11 +201,6 @@ impl SynBody {
     /// Returns `true` if the `COMMAND` flag is set.
     pub fn is_command(&self) -> bool {
         self.flags().contains(PacketFlags::COMMAND)
-    }
-
-    /// Returns `true` if the `ENCRYPTED` flag is set.
-    pub fn is_encrypted(&self) -> bool {
-        self.flags().contains(PacketFlags::ENCRYPTED)
     }
 
     /// Retrives the session name.
@@ -262,7 +274,7 @@ impl PacketBody for SynBody {
     fn decode_body(head: &Self::Head, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match head.packet.kind {
             PacketKind::SYN => Self::decode(b),
-            other => Err(PacketDecodeError::UnexpectedKind(other)),
+            other => Err(PacketDecodeError::UnexpectedKind(other.into())),
         }
     }
 }
@@ -294,8 +306,8 @@ impl Sequence {
         }
     }
 
-    pub fn add(self, length: u8) -> Self {
-        Self(self.0.wrapping_add(length as u16))
+    pub fn add_data(self, len: u8) -> Self {
+        Self(self.0.wrapping_add(len as u16))
     }
 }
 
@@ -386,7 +398,7 @@ impl MsgBody {
     }
 
     pub const fn packet_size_no_data() -> u8 {
-        (mem::size_of::<SessionHeader>() + mem::size_of::<Sequence>() * 2) as u8
+        (SessionHeader::len() + mem::size_of::<Sequence>() * 2) as u8
     }
 }
 
@@ -416,7 +428,7 @@ impl PacketBody for MsgBody {
     fn decode_body(head: &Self::Head, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match head.packet.kind {
             PacketKind::MSG => Self::decode(b),
-            other => Err(PacketDecodeError::UnexpectedKind(other)),
+            other => Err(PacketDecodeError::UnexpectedKind(other.into())),
         }
     }
 }
@@ -432,6 +444,7 @@ pub struct FinBody {
 
 impl FinBody {
     /// Constructs a new `FIN` packet.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             reason: StringBytes::new(),
@@ -489,7 +502,7 @@ impl PacketBody for FinBody {
     fn decode_body(head: &Self::Head, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match head.packet.kind {
             PacketKind::FIN => Self::decode(b),
-            other => Err(PacketDecodeError::UnexpectedKind(other)),
+            other => Err(PacketDecodeError::UnexpectedKind(other.into())),
         }
     }
 }
@@ -565,7 +578,7 @@ impl PacketBody for EncBody {
     fn decode_body(head: &Self::Head, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
         match head.packet.kind {
             PacketKind::ENC => Self::decode(b),
-            other => Err(PacketDecodeError::UnexpectedKind(other)),
+            other => Err(PacketDecodeError::UnexpectedKind(other.into())),
         }
     }
 }
@@ -675,13 +688,7 @@ mod tests {
         body: B,
     ) -> Packet<SupportedBody<SupportedSessionBody>> {
         Packet::new(
-            SupportedHeader::Session(SessionHeader {
-                packet: PacketHeader {
-                    id: packet_id,
-                    kind: packet_kind,
-                },
-                session_id,
-            }),
+            SupportedHeader::Session(SessionHeader::new(packet_id, packet_kind, session_id)),
             SupportedBody::Session(body.into()),
         )
     }

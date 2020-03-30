@@ -21,6 +21,8 @@ pub enum EncryptionError {
     Authentication,
     #[fail(display = "Keypair generation failed")]
     Keygen,
+    #[fail(display = "Invalid signature")]
+    Signature,
     #[fail(display = "{}", _0)]
     Custom(&'static str),
 }
@@ -30,7 +32,7 @@ pub trait Encryption {
 
     fn public_key(&self) -> PublicKey;
 
-    fn authenticator(&mut self) -> Result<Authenticator, EncryptionError>;
+    fn authenticator(&self) -> Authenticator;
 
     fn handshake(&mut self, peer: PublicKey) -> Result<(), EncryptionError>;
 
@@ -63,7 +65,7 @@ impl Encryption for NoEncryption {
         unreachable!()
     }
 
-    fn authenticator(&mut self) -> Result<Authenticator, EncryptionError> {
+    fn authenticator(&self) -> Authenticator {
         unreachable!()
     }
 

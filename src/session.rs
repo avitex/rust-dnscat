@@ -15,7 +15,7 @@ pub enum SessionError {
     Closed,
     #[fail(display = "Encryption error: {}", _0)]
     Encryption(EncryptionError),
-    #[fail(display = "Encryption flag mismatch")]
+    #[fail(display = "Encryption mismatch")]
     EncryptionMismatch,
     #[fail(
         display = "Unexpected session ID (expected: {}, got: {})",
@@ -88,6 +88,16 @@ pub enum SessionStage {
     Closed,
 }
 
+impl SessionStage {
+    pub fn is_established(self) -> bool {
+        use SessionStage::*;
+        match self {
+            Send | Recv => true,
+            Uninit | EncryptInit | EncryptAuth | SessionInit | Closed => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SessionRole {
     /// The session is a client.
@@ -129,6 +139,7 @@ impl<T> Session<T>
 where
     T: Encryption,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: SessionId,
         name: Option<Cow<'static, str>>,
@@ -231,7 +242,7 @@ where
             },
             // We are a client and this is the server's `SYN` response.
             (Client, SessionInit, SYN) => match self.handle_syn(packet) {
-                Ok(()) => Ok((None, SessionInit)),
+                Ok(()) => Ok((None, Send)),
                 Err(err) => Err(err),
             },
             // We are either a server or client and this is a `MSG` from our peer.
@@ -239,12 +250,27 @@ where
                 Ok(data) => Ok((data, Send)),
                 Err(err) => Err(err),
             },
+            // We received a FIN from the server.
+            (Client, _, FIN) => match self.handle_fin(packet) {
+                Ok(()) => Ok((None, Closed)),
+                Err(err) => Err(err),
+            },
             // This session is closed.
             (_, Closed, _) => Err(SessionError::Closed),
             // We received something unexpected.
             (_, stage, kind) => Err(SessionError::UnexpectedKind { kind, stage }),
         };
-        result.map(|_| None)
+        match result {
+            Ok((_, Closed)) => {
+                self.set_stage(Closed);
+                Err(SessionError::Closed)
+            }
+            Ok((data, next_stage)) => {
+                self.set_stage(next_stage);
+                Ok(data)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     fn handle_encrypt_init(
@@ -252,7 +278,7 @@ where
         packet: Packet<SessionBodyBytes>,
     ) -> Result<(), SessionError> {
         if let Some(ref mut encryption) = self.encryption {
-            let body: EncBody = Self::parse_packet(packet, Some(encryption), self.packet_trace)?;
+            let body: EncBody = Self::parse_packet(packet, None, self.packet_trace)?;
             let peer_pub_key = match body.into_body() {
                 EncBodyVariant::Init { public_key } => public_key,
                 EncBodyVariant::Auth { .. } => {
@@ -312,10 +338,20 @@ where
         }
     }
 
+    fn handle_fin(&mut self, packet: Packet<SessionBodyBytes>) -> Result<(), SessionError> {
+        let body: FinBody =
+            Self::parse_packet(packet, self.encryption.as_mut(), self.packet_trace)?;
+        self.close_reason = Some(body.reason().to_owned().into());
+        Ok(())
+    }
+
     ///////////////////////////////////////////////////////////////////////////
 
     pub fn build_enc_init(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
-        self.assert_stage(&[SessionStage::Uninit]);
+        match self.role {
+            SessionRole::Client => self.assert_stage(SessionStage::Uninit),
+            SessionRole::Server => self.assert_stage(SessionStage::EncryptInit),
+        }
         let encryption = self.encryption.as_ref().unwrap();
         let public_key = encryption.public_key();
         let body = EncBody::new(0, EncBodyVariant::Init { public_key });
@@ -323,41 +359,45 @@ where
             SessionRole::Client => self.set_stage(SessionStage::EncryptInit),
             SessionRole::Server => self.set_stage(SessionStage::EncryptAuth),
         }
-        self.build_packet(body)
+        Self::build_packet(body, self.id, None, self.packet_trace)
     }
 
     pub fn build_enc_auth(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
-        self.assert_stage(&[SessionStage::EncryptAuth]);
+        self.assert_stage(SessionStage::EncryptAuth);
         let encryption = self.encryption.as_mut().unwrap();
-        let authenticator = encryption.authenticator()?;
+        let authenticator = encryption.authenticator();
         let body = EncBody::new(0, EncBodyVariant::Auth { authenticator });
         match self.role {
             SessionRole::Client => self.set_stage(SessionStage::EncryptAuth),
             SessionRole::Server => self.set_stage(SessionStage::SessionInit),
         }
-        self.build_packet(body)
+        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
     }
 
     pub fn build_syn(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
-        self.assert_stage(&[SessionStage::Uninit, SessionStage::EncryptAuth]);
-        let mut body = SynBody::new(self.self_seq, self.is_command, self.is_encrypted());
+        if self.is_encrypted() {
+            self.assert_stage(SessionStage::SessionInit);
+        } else {
+            self.assert_stage(SessionStage::Uninit);
+        }
+        let mut body = SynBody::new(self.self_seq, self.is_command);
         if let Some(ref name) = self.name {
             body.set_session_name(name.clone());
         }
         match self.role {
-            SessionRole::Client => self.set_stage(SessionStage::EncryptAuth),
-            SessionRole::Server => self.set_stage(SessionStage::SessionInit),
+            SessionRole::Client => self.set_stage(SessionStage::SessionInit),
+            SessionRole::Server => self.set_stage(SessionStage::Recv),
         }
-        self.build_packet(body)
+        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
     }
 
     pub fn build_msg(&mut self, chunk: Bytes) -> Result<Packet<SessionBodyBytes>, SessionError> {
-        self.assert_stage(&[SessionStage::Send]);
+        self.assert_stage(SessionStage::Send);
         let mut body = MsgBody::new(self.self_seq, self.peer_seq);
         body.set_data(chunk);
         self.set_pending_ack(body.data_len());
         self.set_stage(SessionStage::Recv);
-        self.build_packet(body)
+        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
     }
 
     pub fn build_fin<S>(&mut self, reason: S) -> Result<Packet<SessionBodyBytes>, SessionError>
@@ -371,29 +411,33 @@ where
             self.close_reason = Some(reason);
         }
         self.set_stage(SessionStage::Closed);
-        self.build_packet(body)
+        let encryption = if self.stage.is_established() {
+            self.encryption.as_mut()
+        } else {
+            None
+        };
+        Self::build_packet(body, self.id, encryption, self.packet_trace)
     }
 
     ///////////////////////////////////////////////////////////////////////////
 
     fn set_stage(&mut self, stage: SessionStage) {
-        debug!("session stage {:?} changed to {:?}", self.stage, stage);
-        self.stage = stage;
+        if self.stage != stage {
+            debug!("session stage {:?} changed to {:?}", self.stage, stage);
+            self.stage = stage;
+        }
     }
 
-    fn assert_stage(&self, expect: &'static [SessionStage]) {
-        if !expect.contains(&self.stage) {
-            panic!(
-                "expected stage(s) {:?}, got stage: {:?}",
-                expect, self.stage
-            );
+    fn assert_stage(&self, expect: SessionStage) {
+        if expect != self.stage {
+            panic!("expected stage {:?}, got stage: {:?}", expect, self.stage);
         }
     }
 
     ///////////////////////////////////////////////////////////////////////////
 
     fn set_pending_ack(&mut self, sent: u8) {
-        self.self_seq_pending = self.self_seq.add(sent);
+        self.self_seq_pending = self.self_seq.add_data(sent);
     }
 
     fn validate_exchange(
@@ -405,24 +449,24 @@ where
         // We first validate that the peer acknowledged
         // the data (if any) we sent.
         if peer_ack != self.self_seq_pending {
-            Err(SessionError::UnexpectedPeerAck {
+            return Err(SessionError::UnexpectedPeerAck {
                 expected: self.self_seq_pending,
                 actual: peer_ack,
-            })?;
+            });
         }
         // We now validate we are current with the peer's
         // current sequence.
         if peer_seq != self.peer_seq {
-            Err(SessionError::UnexpectedPeerSeq {
+            return Err(SessionError::UnexpectedPeerSeq {
                 expected: self.peer_seq,
                 actual: peer_seq,
-            })?;
+            });
         }
         // Print out the length of data we received and sent.
         let sent_len = self.self_seq.steps_to(peer_ack);
         debug!("data-ack: [rx: {}, tx: {}]", recv_len, sent_len);
         // Update our sequence values.
-        self.peer_seq = self.peer_seq.add(recv_len);
+        self.peer_seq = self.peer_seq.add_data(recv_len);
         self.self_seq = self.self_seq_pending;
         // Woo!
         Ok(())
@@ -440,10 +484,6 @@ where
         }
         // Extract if the peer indicates this is a command session
         self.is_command = syn.is_command();
-        // Check the encrypted flags match
-        if self.encryption.is_some() != syn.is_encrypted() {
-            return Err(SessionError::EncryptionMismatch);
-        }
         // Extract the peer initial sequence
         self.peer_seq = syn.initial_sequence();
         // Woo!
@@ -461,13 +501,11 @@ where
         B: PacketBody<Head = SessionHeader>,
         B: fmt::Debug,
     {
-        // Get the packet kind of the body.
-        let kind = packet.kind();
         let (head, body) = packet.split();
         // If encryption is enabled, decrypt our session body.
         let mut body_bytes = match encryption {
             // TODO: what if packet size < head_size?
-            Some(enc) if kind.can_encrypt() => {
+            Some(enc) => {
                 let args_size = enc.args_size() as usize;
                 let args = &body.0[..args_size];
                 let mut data = Vec::from(&body.0[args_size..]);
@@ -476,42 +514,43 @@ where
             }
             _ => body.0,
         };
+
         // Decode the session body bytes and return.
         let body = B::decode_body(&head, &mut body_bytes)?;
+
         if packet_trace {
             debug!("body-rx: {:?}", body);
         }
         Ok(body)
     }
 
-    fn build_packet<B>(&mut self, body: B) -> Result<Packet<SessionBodyBytes>, SessionError>
+    fn build_packet<B>(
+        body: B,
+        session_id: SessionId,
+        encryption: Option<&mut T>,
+        packet_trace: bool,
+    ) -> Result<Packet<SessionBodyBytes>, SessionError>
     where
         B: Into<SupportedSessionBody>,
     {
         let body = body.into();
-        if self.packet_trace {
+        if packet_trace {
             debug!("body-tx: {:?}", body);
         }
         // Get the packet kind of the body.
         let kind = body.packet_kind();
         // Create the packet header.
-        let head = SessionHeader {
-            packet: PacketHeader {
-                id: rand::random(),
-                kind,
-            },
-            session_id: self.id,
-        };
+        let head = SessionHeader::new(rand::random(), kind, session_id);
         // Encode the body into a buffer.
         let mut body_bytes = Vec::with_capacity(256);
         // If encryption is enabled, encrypt our session body
-        match self.encryption.as_mut() {
-            Some(enc) if kind.can_encrypt() => {
+        match encryption {
+            Some(enc) => {
                 let args_size = enc.args_size() as usize;
                 body_bytes.resize(args_size, 0);
                 body.encode(&mut body_bytes);
                 let (args, data) = body_bytes.split_at_mut(args_size);
-                enc.encrypt(&head, args, data)?
+                enc.encrypt(&head, args, data)?;
             }
             _ => body.encode(&mut body_bytes),
         }
@@ -525,7 +564,7 @@ where
         &mut self,
         mut packet: Packet<SessionBodyBytes>,
     ) -> Packet<SessionBodyBytes> {
-        packet.head.packet.id = rand::random();
+        packet.head.set_packet_id(rand::random());
         packet
     }
 

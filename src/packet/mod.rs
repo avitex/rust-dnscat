@@ -1,6 +1,7 @@
 mod ping;
 mod session;
 
+use std::mem;
 use std::str::{self, Utf8Error};
 
 use bitflags::bitflags;
@@ -154,6 +155,12 @@ pub struct PacketHeader {
     pub kind: PacketKind,
 }
 
+impl PacketHeader {
+    pub const fn len() -> usize {
+        mem::size_of::<PacketId>() + mem::size_of::<PacketKind>()
+    }
+}
+
 impl Encode for PacketHeader {
     fn encode<B: BufMut + ?Sized>(&self, b: &mut B) {
         b.put_u16(self.id);
@@ -177,61 +184,43 @@ impl Decode for PacketHeader {
 
 /// Enum of all possible packet kinds.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum PacketKind {
     /// `SYN` packet kind.
-    SYN,
+    SYN = 0x00,
     /// `MSG` packet kind.
-    MSG,
+    MSG = 0x01,
     /// `FIN` packet kind.
-    FIN,
+    FIN = 0x02,
     /// `ENC` packet kind.
-    ENC,
+    ENC = 0x03,
     /// `PING` packet kind.
-    PING,
-    /// Unsupported packet kind.
-    Other(u8),
+    PING = 0xFF,
 }
 
 impl PacketKind {
-    pub fn can_encrypt(self) -> bool {
-        match self {
-            // TODO: Other is true to break things intentionally.
-            Self::SYN | Self::MSG | Self::FIN | Self::Other(_) => true,
-            Self::PING | Self::ENC => false,
+    pub fn from_code(code: u8) -> Result<Self, PacketDecodeError> {
+        match code {
+            0x00 => Ok(Self::SYN),
+            0x01 => Ok(Self::MSG),
+            0x02 => Ok(Self::FIN),
+            0x03 => Ok(Self::ENC),
+            0xFF => Ok(Self::PING),
+            code => Err(PacketDecodeError::UnexpectedKind(code)),
         }
     }
 
     pub fn is_session(self) -> bool {
         match self {
             Self::SYN | Self::MSG | Self::FIN | Self::ENC => true,
-            Self::PING | Self::Other(_) => false,
+            Self::PING => false,
         }
     }
 }
 
 impl From<PacketKind> for u8 {
     fn from(kind: PacketKind) -> u8 {
-        match kind {
-            PacketKind::SYN => 0x00,
-            PacketKind::MSG => 0x01,
-            PacketKind::FIN => 0x02,
-            PacketKind::ENC => 0x03,
-            PacketKind::PING => 0xFF,
-            PacketKind::Other(v) => v,
-        }
-    }
-}
-
-impl From<u8> for PacketKind {
-    fn from(kind: u8) -> Self {
-        match kind {
-            0x00 => Self::SYN,
-            0x01 => Self::MSG,
-            0x02 => Self::FIN,
-            0x03 => Self::ENC,
-            0xFF => Self::PING,
-            v => Self::Other(v),
-        }
+        kind as u8
     }
 }
 
@@ -245,7 +234,7 @@ impl Decode for PacketKind {
     type Error = PacketDecodeError;
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
-        Ok(parse::be_u8(b)?.into())
+        Self::from_code(parse::be_u8(b)?)
     }
 }
 
@@ -279,6 +268,7 @@ bitflags! {
         /// `OPT_ENCRYPTED`
         ///
         /// We're negotiating encryption.
+        #[deprecated]
         const ENCRYPTED = 0b0100_0000;
     }
 }
@@ -306,7 +296,7 @@ pub enum PacketDecodeError {
     Utf8(Utf8Error),
     /// Unexpected packet kind.
     #[fail(display = "Unexpected packet kind: {:?}", _0)]
-    UnexpectedKind(PacketKind),
+    UnexpectedKind(u8),
     /// Unknown encryption packet kind.
     #[fail(display = "Unknown encryption subtype: {}", _0)]
     UnknownEncKind(u16),
@@ -383,7 +373,7 @@ impl PacketHead for SupportedHeader {
         match head.kind {
             kind if kind.is_session() => SessionHeader::decode_head(head, b).map(Self::Session),
             PacketKind::PING => PingHeader::decode_head(head, b).map(Self::Ping),
-            kind => Err(PacketDecodeError::UnexpectedKind(kind)),
+            kind => Err(PacketDecodeError::UnexpectedKind(kind.into())),
         }
     }
 }
@@ -478,6 +468,12 @@ mod tests {
         let prev = Sequence(u16::max_value());
         let next = Sequence(50);
         assert_eq!(prev.steps_to(next), 51);
+    }
+
+    #[test]
+    fn test_headers_len() {
+        assert_eq!(PacketHeader::len(), 3);
+        assert_eq!(SessionHeader::len(), 5);
     }
 
     // #[test]
