@@ -8,5 +8,5 @@
 Documentation hosted on [docs.rs](https://docs.rs/dnscat).
 
 ```toml
-dnscat = "0.1.0"
+dnscat = "0.1"
 ```

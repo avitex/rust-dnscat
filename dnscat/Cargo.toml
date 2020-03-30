@@ -1,14 +1,15 @@
 [package]
 name = "dnscat"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["avitex <theavitex@gmail.com>"]
 edition = "2018"
 categories = ["network-programming"]
 description = "DNSCAT2 protocol"
 documentation = "https://docs.rs/dnscat"
-homepage = "https://github.com/avitex/dnscat"
-repository = "https://github.com/avitex/dnscat"
+homepage = "https://github.com/avitex/rust-dnscat"
+repository = "https://github.com/avitex/rust-dnscat"
 license = "MIT"
+readme = "README.md"
 
 [[bin]]
 name = "dnscat"
