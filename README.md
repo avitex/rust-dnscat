@@ -4,7 +4,7 @@
 
 # rust-dnscat
 
-**Rust implementation of the DNSCAT2 protocol**  
+**Rust implementation of the [DNSCAT2 protocol]**  
 Documentation hosted on [docs.rs](https://docs.rs/dnscat).
 
 ```toml
@@ -22,7 +22,7 @@ cargo install dnscat-client
 ```text
 $ dnscat-client -h
 dnscat-client 0.1
-James Dyson <theavitex@gmail.com>
+avitex <theavitex@gmail.com>
 DNSCAT client
 
 USAGE:
@@ -63,3 +63,5 @@ Start the client with the DNSCAT2 stream attached to netcat:
 dnscat-client example.com. --server 127.0.0.1:53531 \
   --insecure --session-name my-session --exec nc -l 8081
 ```
+
+[DNSCAT2 protocol]: https://github.com/iagox86/dnscat2/blob/master/doc/protocol.md
