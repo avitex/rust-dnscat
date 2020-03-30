@@ -1,0 +1,11 @@
+[package]
+name = "dnscat-server"
+version = "0.0.0"
+authors = ["avitex <theavitex@gmail.com>"]
+edition = "2018"
+description = "Standalone DNSCAT2 server"
+documentation = "https://docs.rs/dnscat"
+homepage = "https://github.com/avitex/rust-dnscat"
+repository = "https://github.com/avitex/rust-dnscat"
+
+[dependencies]

@@ -2,6 +2,7 @@
 members = [
     "dnscat",
     "dnscat-client",
+    "dnscat-server",
 ]
 
 [patch.crates-io]
