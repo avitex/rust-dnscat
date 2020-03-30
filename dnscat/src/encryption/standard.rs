@@ -138,7 +138,9 @@ impl Encryption for StandardEncryption {
     }
 
     fn authenticate(&mut self, peer: Authenticator) -> Result<(), EncryptionError> {
-        let valid = self.peer_authenticator.unwrap();
+        let valid = self
+            .peer_authenticator
+            .expect("peer authenticator consumed or not init");
         if constant_time_eq(&valid[..], &peer[..]) {
             Ok(())
         } else {

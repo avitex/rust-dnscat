@@ -340,7 +340,7 @@ where
             SessionRole::Client => self.assert_stage(SessionStage::Uninit),
             SessionRole::Server => self.assert_stage(SessionStage::EncryptInit),
         }
-        let encryption = self.encryption.as_ref().unwrap();
+        let encryption = self.encryption.as_ref().expect("client has no encryption");
         let public_key = encryption.public_key();
         let body = EncBody::new(0, EncBodyVariant::Init { public_key });
         match self.role {
@@ -353,7 +353,7 @@ where
 
     pub fn build_enc_auth(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
         self.assert_stage(SessionStage::EncryptAuth);
-        let encryption = self.encryption.as_mut().unwrap();
+        let encryption = self.encryption.as_mut().expect("client has no encryption");
         let authenticator = encryption.authenticator();
         let body = EncBody::new(0, EncBodyVariant::Auth { authenticator });
         match self.role {
