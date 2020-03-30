@@ -657,7 +657,7 @@ impl EncBodyKind {
 mod tests {
     use super::*;
     use crate::encryption::{Authenticator, PublicKey};
-    use crate::util::generic_array::sequence::GenericSequence;
+    use generic_array::sequence::GenericSequence;
 
     fn assert_pkt_encdec_works(
         packet_in: &'static [u8],

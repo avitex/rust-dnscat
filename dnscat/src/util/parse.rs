@@ -3,8 +3,8 @@ use std::str::Utf8Error;
 
 use bytes::{Buf, Bytes};
 use failure::Fail;
+use generic_array::{ArrayLength, GenericArray};
 
-use crate::util::generic_array::{ArrayLength, GenericArray};
 use crate::util::StringBytes;
 
 #[derive(Debug, Clone, PartialEq, Fail)]

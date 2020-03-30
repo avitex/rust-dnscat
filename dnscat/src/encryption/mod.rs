@@ -1,12 +1,14 @@
+#[cfg(feature = "encryption")]
 mod standard;
 
 use failure::Fail;
+use generic_array::typenum::{U32, U64};
+use generic_array::GenericArray;
 
 use crate::packet::SessionHeader;
-use crate::util::generic_array::GenericArray;
-use crate::util::typenum::{U32, U64};
 
-pub use self::standard::*;
+#[cfg(feature = "encryption")]
+pub use self::standard::StandardEncryption;
 
 pub type PublicKey = GenericArray<u8, U64>;
 pub type Authenticator = GenericArray<u8, U32>;

@@ -27,9 +27,4 @@ mod util {
 
     pub use self::encdec::{Decode, Encode};
     pub use self::sbytes::StringBytes;
-
-    pub use digest::generic_array;
-    pub use digest::generic_array::typenum;
-
-    pub use constant_time_eq::constant_time_eq;
 }

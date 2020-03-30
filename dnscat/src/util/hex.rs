@@ -2,9 +2,8 @@ use std::iter;
 
 use bytes::BufMut;
 use failure::Fail;
+use generic_array::GenericArray;
 use itertools::{self, Itertools};
-
-use crate::util::generic_array::GenericArray;
 
 /// Hex nibble invalid
 const INVD: u8 = 0xFF;

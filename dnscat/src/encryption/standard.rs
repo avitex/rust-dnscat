@@ -1,19 +1,20 @@
 use std::borrow::Borrow;
 
 use bytes::BufMut;
-
+use constant_time_eq::constant_time_eq;
+use generic_array::typenum::{U32, U65};
+use generic_array::{sequence::Lengthen, GenericArray};
 use ring::agreement::{self, agree_ephemeral};
 use ring::rand;
-use salsa20::{stream_cipher::*, Salsa20};
+use salsa20::stream_cipher::{NewStreamCipher, StreamCipher};
+use salsa20::Salsa20;
 use secstr::SecStr;
 use sha3::{Digest, Sha3_256};
 
 use super::{Authenticator, Encryption, EncryptionError, PublicKey};
 
 use crate::packet::SessionHeader;
-use crate::util::generic_array::{sequence::Lengthen, GenericArray};
-use crate::util::typenum::{U32, U65};
-use crate::util::{constant_time_eq, Encode};
+use crate::util::Encode;
 
 const PUBLIC_KEY_OCTET_TAG: u8 = 0x04;
 
