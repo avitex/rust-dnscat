@@ -109,63 +109,36 @@ pub enum SessionRole {
 #[derive(Debug)]
 pub struct Session<T> {
     /// The ID for this session.
-    id: SessionId,
+    pub(crate) id: SessionId,
     /// The name if set for this session.
-    name: Option<Cow<'static, str>>,
+    pub(crate) name: Option<Cow<'static, str>>,
     /// The peer sequence for receiving data.
-    peer_seq: Sequence,
+    pub(crate) peer_seq: Sequence,
     /// This session's sequence for sending data.
-    self_seq: Sequence,
+    pub(crate) self_seq: Sequence,
     /// The peer sequence we expect in the next message.
-    self_seq_pending: Sequence,
+    pub(crate) self_seq_pending: Sequence,
     /// Whether or not this is a command session.
-    is_command: bool,
+    pub(crate) is_command: bool,
     /// Whether or not this is a client to server session.
-    role: SessionRole,
+    pub(crate) role: SessionRole,
     /// Session stage.
-    stage: SessionStage,
+    pub(crate) stage: SessionStage,
     /// The reason the session was closing/closed.
-    close_reason: Option<Cow<'static, str>>,
+    pub(crate) close_reason: Option<Cow<'static, str>>,
     /// The session encryption if set.
-    encryption: Option<T>,
+    pub(crate) encryption: Option<T>,
     /// Whether the session prefers the peer name or
     /// its own if it was set.
-    prefer_peer_name: bool,
+    pub(crate) prefer_peer_name: bool,
     /// Whether or not packet bodies should be traced.
-    packet_trace: bool,
+    pub(crate) packet_trace: bool,
 }
 
 impl<T> Session<T>
 where
     T: Encryption,
 {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: SessionId,
-        name: Option<Cow<'static, str>>,
-        init_seq: Sequence,
-        is_command: bool,
-        role: SessionRole,
-        encryption: Option<T>,
-        prefer_peer_name: bool,
-        packet_trace: bool,
-    ) -> Self {
-        Self {
-            id,
-            name,
-            self_seq: init_seq,
-            self_seq_pending: init_seq,
-            peer_seq: Sequence(0),
-            is_command,
-            role,
-            close_reason: None,
-            encryption,
-            stage: SessionStage::Uninit,
-            prefer_peer_name,
-            packet_trace,
-        }
-    }
-
     /// Returns session ID.
     pub fn id(&self) -> SessionId {
         self.id

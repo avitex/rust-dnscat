@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
 
 use crate::encryption::{Encryption, NoEncryption};
 use crate::packet::*;
-use crate::session::{Session, SessionError, SessionRole};
+use crate::session::{Session, SessionError, SessionRole, SessionStage};
 use crate::transport::ExchangeTransport;
 
 #[derive(Debug, Fail)]
@@ -585,16 +585,20 @@ where
         } else {
             Some(self.session_name)
         };
-        let session = Session::new(
-            session_id,
-            session_name,
-            Sequence(init_seq),
-            self.is_command,
-            SessionRole::Client,
+        let session = Session {
+            id: session_id,
+            name: session_name,
+            self_seq: Sequence(init_seq),
+            self_seq_pending: Sequence(init_seq),
+            peer_seq: Sequence(0),
+            is_command: self.is_command,
+            role: SessionRole::Client,
             encryption,
-            self.prefer_server_name,
-            self.packet_trace,
-        );
+            stage: SessionStage::Uninit,
+            prefer_peer_name: self.prefer_server_name,
+            packet_trace: self.packet_trace,
+            close_reason: None,
+        };
         let client = Client {
             random: self.random,
             session,
