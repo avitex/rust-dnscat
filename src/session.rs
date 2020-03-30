@@ -4,7 +4,7 @@ use std::{cmp, fmt};
 
 use bytes::Bytes;
 use failure::Fail;
-use log::debug;
+use log::{debug, trace};
 use rand::Rng;
 
 use crate::encryption::*;
@@ -440,7 +440,7 @@ where
 
     fn set_stage(&mut self, stage: SessionStage) {
         if self.stage != stage {
-            debug!("session stage {:?} changed to {:?}", self.stage, stage);
+            trace!("session stage {:?} changed to {:?}", self.stage, stage);
             self.stage = stage;
         }
     }
@@ -534,7 +534,6 @@ where
 
         // Decode the session body bytes and return.
         let body = B::decode_body(&head, &mut body_bytes)?;
-
         if packet_trace {
             debug!("body-rx: {:?}", body);
         }

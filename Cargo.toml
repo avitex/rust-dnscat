@@ -6,10 +6,10 @@ edition = "2018"
 
 [[bin]]
 name = "dnscat"
-required-features = ["cli"]
+required-features = ["cli", "encryption"]
 
 [features]
-default = ["encryption"]
+default = ["encryption", "cli"]
 encryption = ["ring", "sha3", "digest", "constant_time_eq", "secstr", "salsa20"]
 cli = ["structopt", "dotenv", "env_logger", "trust-dns-resolver", "tokio/full"]
 
@@ -23,8 +23,7 @@ futures-timer = "~3.0"
 trust-dns-proto = "~0.19"
 trust-dns-client = "~0.19"
 rand = "~0.7"
-itertools = "~0.8"
-arrayvec = "~0.5"
+itertools = "~0.9"
 failure = "~0.1"
 
 # CLI

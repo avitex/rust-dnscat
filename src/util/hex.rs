@@ -1,9 +1,10 @@
 use std::iter;
 
-use arrayvec::ArrayVec;
 use bytes::BufMut;
 use failure::Fail;
 use itertools::{self, Itertools};
+
+use crate::util::generic_array::GenericArray;
 
 /// Hex nibble invalid
 const INVD: u8 = 0xFF;
@@ -62,7 +63,7 @@ where
 {
     iter.flat_map(|byte| {
         let (high, low) = split_halves(byte);
-        ArrayVec::from([encode_nibble(high), encode_nibble(low)])
+        GenericArray::from([encode_nibble(high), encode_nibble(low)])
     })
 }
 
