@@ -7,5 +7,6 @@ description = "Standalone DNSCAT2 server"
 documentation = "https://docs.rs/dnscat"
 homepage = "https://github.com/avitex/rust-dnscat"
 repository = "https://github.com/avitex/rust-dnscat"
+license = "MIT"
 
 [dependencies]
