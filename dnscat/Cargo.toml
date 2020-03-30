@@ -1,0 +1,51 @@
+[package]
+name = "dnscat"
+version = "0.1.0"
+authors = ["avitex <theavitex@gmail.com>"]
+edition = "2018"
+
+[[bin]]
+name = "dnscat"
+required-features = ["cli"]
+
+[features]
+default = ["encryption", "client"]
+client = ["trust-dns-client"]
+encryption = ["ring", "sha3", "digest", "constant_time_eq", "secstr", "salsa20"]
+cli = ["client-cli", "tokio/macros"]
+client-cli = ["structopt", "dotenv", "env_logger", "encryption", "client", "trust-dns-resolver", "tokio/io-util", "tokio/io-std", "tokio/process"]
+
+[dependencies]
+log = "~0.4"
+bytes = "~0.5"
+bitflags = "~1.2"
+tokio = "~0.2"
+futures = "~0.3"
+futures-timer = "~3.0"
+trust-dns-proto = "~0.19"
+rand = "~0.7"
+itertools = "~0.9"
+failure = "~0.1"
+
+# Client
+trust-dns-client = { version = "~0.19", optional = true }
+
+# CLI
+structopt = { version = "~0.3", optional = true }
+env_logger = { version = "~0.7", optional = true }
+dotenv = { version = "~0.15", optional = true }
+trust-dns-resolver = { version = "~0.19", optional = true }
+
+# Encryption
+digest = { version = "0.8", optional = true }
+sha3 = { version = "0.8", optional = true }
+salsa20 = { version = "0.4", optional = true }
+ring = { version = "0.16", optional = true }
+constant_time_eq = { version = "0.1", optional = true }
+secstr = { version = "0.4", optional = true }
+
+[dev-dependencies]
+tokio = { version = "~0.2", features = ["full"] }
+rand_pcg = "~0.2"
+dotenv = "~0.15"
+env_logger = "~0.7"

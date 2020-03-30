@@ -16,7 +16,7 @@ use crate::transport::ExchangeTransport;
 
 #[derive(StructOpt, Debug)]
 #[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
-pub(crate) struct Opts {
+pub struct App {
     /// DNS name constant.
     constant: Name,
 
@@ -106,82 +106,91 @@ pub(crate) struct Opts {
     exec: Vec<String>,
 }
 
-pub(crate) async fn start(opts: &Opts) {
-    // Build DNS client
-    let dns_server_addr = if let Some(server) = opts.server {
-        server
-    } else {
-        let server = match dns::get_system_dns_server() {
-            Ok(Some(server_addr)) => server_addr,
-            Ok(None) => panic!("no valid system DNS servers"),
-            Err(err) => panic!("failed to load system DNS config: {}", err),
+impl App {
+    pub fn new() -> Self {
+        Self::from_args()
+    }
+
+    pub async fn run(&self) {
+        dotenv::dotenv().ok();
+        env_logger::init();
+
+        // Build DNS client
+        let dns_server_addr = if let Some(server) = self.server {
+            server
+        } else {
+            let server = match dns::get_system_dns_server() {
+                Ok(Some(server_addr)) => server_addr,
+                Ok(None) => panic!("no valid system DNS servers"),
+                Err(err) => panic!("failed to load system DNS config: {}", err),
+            };
+            if !self.constant.is_fqdn() {
+                // Unless you've changed system configuration to point to a
+                // DNSCAT2 server, this will most certainly not work.
+                warn!("non-FQDN is being used with a system DNS server");
+            }
+            server
         };
-        if !opts.constant.is_fqdn() {
-            // Unless you've changed system configuration to point to a
-            // DNSCAT2 server, this will most certainly not work.
-            warn!("non-FQDN is being used with a system DNS server");
+
+        // Build the DNS endpoint
+        let dns_endpoint =
+            BasicDnsEndpoint::new_with_defaults(self.query.clone(), self.constant.clone()).unwrap();
+
+        // Build the DNS client
+        let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
+            .await
+            .unwrap();
+
+        // Start building the client connection
+        let mut conn = ClientBuilder::default()
+            .command(self.command)
+            .min_delay(Duration::from_millis(self.min_delay))
+            .max_delay(Duration::from_millis(self.max_delay))
+            .random_delay(self.random_delay)
+            .retransmit_backoff(self.retransmit_backoff)
+            .random_delay(self.random_delay)
+            .prefer_server_name(self.prefer_server_name)
+            .recv_queue_size(self.recv_queue_size)
+            .packet_trace(self.packet_trace);
+
+        if let Some(session_id) = self.session_id {
+            conn = conn.session_id(session_id)
         }
-        server
-    };
-
-    // Build the DNS endpoint
-    let dns_endpoint =
-        BasicDnsEndpoint::new_with_defaults(opts.query.clone(), opts.constant.clone()).unwrap();
-
-    // Build the DNS client
-    let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
-        .await
-        .unwrap();
-
-    // Start building the client connection
-    let mut conn = ClientBuilder::default()
-        .command(opts.command)
-        .min_delay(Duration::from_millis(opts.min_delay))
-        .max_delay(Duration::from_millis(opts.max_delay))
-        .random_delay(opts.random_delay)
-        .retransmit_backoff(opts.retransmit_backoff)
-        .random_delay(opts.random_delay)
-        .prefer_server_name(opts.prefer_server_name)
-        .recv_queue_size(opts.recv_queue_size)
-        .packet_trace(opts.packet_trace);
-
-    if let Some(session_id) = opts.session_id {
-        conn = conn.session_id(session_id)
-    }
-    if let Some(ref session_name) = opts.session_name {
-        conn = conn.session_name(session_name.clone())
-    }
-    if opts.retransmit_forever {
-        conn = conn.max_retransmits(None);
-    } else {
-        conn = conn.max_retransmits(Some(opts.max_retransmits));
-    }
-
-    info!(
-        "connecting to `{}` using `{}`",
-        dns_server_addr, opts.constant
-    );
-
-    let result = if let Some(ref secret) = opts.secret {
-        let preshared_key = Some(Vec::from(secret.clone()));
-        let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
-        match conn.connect(dns_client, encryption).await {
-            Ok(client) => Ok(start_session(client, opts).await),
-            Err(err) => Err(err),
+        if let Some(ref session_name) = self.session_name {
+            conn = conn.session_name(session_name.clone())
         }
-    } else {
-        assert!(opts.insecure);
-        match conn.connect_insecure(dns_client).await {
-            Ok(client) => Ok(start_session(client, opts).await),
-            Err(err) => Err(err),
+        if self.retransmit_forever {
+            conn = conn.max_retransmits(None);
+        } else {
+            conn = conn.max_retransmits(Some(self.max_retransmits));
         }
-    };
-    if let Err(err) = result {
-        error!("failed to connect with {}", err)
+
+        info!(
+            "connecting to `{}` using `{}`",
+            dns_server_addr, self.constant
+        );
+
+        let result = if let Some(ref secret) = self.secret {
+            let preshared_key = Some(Vec::from(secret.clone()));
+            let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
+            match conn.connect(dns_client, encryption).await {
+                Ok(client) => Ok(start_session(client, self).await),
+                Err(err) => Err(err),
+            }
+        } else {
+            assert!(self.insecure);
+            match conn.connect_insecure(dns_client).await {
+                Ok(client) => Ok(start_session(client, self).await),
+                Err(err) => Err(err),
+            }
+        };
+        if let Err(err) = result {
+            error!("failed to connect with {}", err)
+        }
     }
 }
 
-async fn start_session<T, E>(client: Client<T, E>, opts: &Opts)
+async fn start_session<T, E>(client: Client<T, E>, opts: &App)
 where
     T: ExchangeTransport<LazyPacket> + Unpin,
     T::Future: Unpin,

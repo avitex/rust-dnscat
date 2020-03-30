@@ -11,22 +11,22 @@ Documentation hosted on [docs.rs](https://docs.rs/dnscat).
 dnscat = "0.1.0"
 ```
 
-## CLI Usage
+## Client CLI Usage
 
 First install dnscat with:
 
 ```text
-cargo install dnscat
+cargo install dnscat-client
 ```
 
 ```text
-$ dnscat client -h
+$ dnscat-client -h
 dnscat-client 0.1
 James Dyson <theavitex@gmail.com>
 DNSCAT client
 
 USAGE:
-    dnscat client [FLAGS] [OPTIONS] <domain>
+    dnscat-client [FLAGS] [OPTIONS] <domain>
 
 ARGS:
     <domain>    DNS endpoint name
@@ -60,6 +60,6 @@ OPTIONS:
 Start the client with the DNSCAT2 stream attached to netcat:
 
 ```text
-dnscat client example.com. --server 127.0.0.1:53531 \
+dnscat-client example.com. --server 127.0.0.1:53531 \
   --insecure --session-name my-session --exec nc -l 8081
 ```

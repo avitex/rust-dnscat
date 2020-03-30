@@ -1,0 +1,9 @@
+[package]
+name = "dnscat-client"
+version = "0.1.0"
+authors = ["avitex <theavitex@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+dnscat = { version = "0.1", features = ["client-cli"] }
+tokio = { version = "0.2", features = ["macros"] }

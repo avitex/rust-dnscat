@@ -8,7 +8,7 @@
     unreachable_pub
 )]
 
-#[cfg(feature = "cli")]
+#[cfg(feature = "client-cli")]
 pub mod cli;
 pub mod client;
 pub mod encryption;

@@ -1,10 +1,11 @@
+#[cfg(feature = "client")]
 mod client;
 mod endpoint;
 mod name;
-
 #[cfg(feature = "trust-dns-resolver")]
 mod resolver;
 
+#[cfg(feature = "client")]
 pub use self::client::*;
 pub use self::endpoint::*;
 pub use self::name::*;
