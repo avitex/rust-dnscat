@@ -1,9 +1,11 @@
 use std::borrow::Cow;
+use std::time::Instant;
 use std::{cmp, fmt};
 
 use bytes::Bytes;
 use failure::Fail;
 use log::debug;
+use rand::Rng;
 
 use crate::encryption::*;
 use crate::packet::*;
@@ -15,6 +17,8 @@ pub enum SessionError {
     Closed,
     #[fail(display = "Encryption error: {}", _0)]
     Encryption(EncryptionError),
+    #[fail(display = "Max re-transmit attempts reached")]
+    MaxTransmitAttempts,
     #[fail(display = "Encryption mismatch")]
     EncryptionMismatch,
     #[fail(
@@ -107,11 +111,13 @@ pub enum SessionRole {
 }
 
 #[derive(Debug)]
-pub struct Session<T> {
+pub struct Session<T, R> {
     /// The ID for this session.
     pub(crate) id: SessionId,
     /// The name if set for this session.
     pub(crate) name: Option<Cow<'static, str>>,
+    /// Random source.
+    pub(crate) random: R,
     /// The peer sequence for receiving data.
     pub(crate) peer_seq: Sequence,
     /// This session's sequence for sending data.
@@ -133,11 +139,18 @@ pub struct Session<T> {
     pub(crate) prefer_peer_name: bool,
     /// Whether or not packet bodies should be traced.
     pub(crate) packet_trace: bool,
+    /// The last instant we attempted an exchange.
+    pub(crate) last_exchange: Option<Instant>,
+    /// The current if any attempt of exchanges.
+    pub(crate) exchange_attempt: Option<usize>,
+    /// The max number of retransmissions before closing.
+    pub(crate) max_exchange_attempts: Option<usize>,
 }
 
-impl<T> Session<T>
+impl<T, R> Session<T, R>
 where
     T: Encryption,
+    R: Rng,
 {
     /// Returns session ID.
     pub fn id(&self) -> SessionId {
@@ -236,10 +249,12 @@ where
         match result {
             Ok((_, Closed)) => {
                 self.set_stage(Closed);
+                self.mark_exchange_end();
                 Err(SessionError::Closed)
             }
             Ok((data, next_stage)) => {
                 self.set_stage(next_stage);
+                self.mark_exchange_end();
                 Ok(data)
             }
             Err(err) => Err(err),
@@ -332,7 +347,8 @@ where
             SessionRole::Client => self.set_stage(SessionStage::EncryptInit),
             SessionRole::Server => self.set_stage(SessionStage::EncryptAuth),
         }
-        Self::build_packet(body, self.id, None, self.packet_trace)
+        self.mark_exchange_start();
+        Self::build_packet(body, self.id, &mut self.random, None, self.packet_trace)
     }
 
     pub fn build_enc_auth(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
@@ -344,7 +360,14 @@ where
             SessionRole::Client => self.set_stage(SessionStage::EncryptAuth),
             SessionRole::Server => self.set_stage(SessionStage::SessionInit),
         }
-        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
+        self.mark_exchange_start();
+        Self::build_packet(
+            body,
+            self.id,
+            &mut self.random,
+            self.encryption.as_mut(),
+            self.packet_trace,
+        )
     }
 
     pub fn build_syn(&mut self) -> Result<Packet<SessionBodyBytes>, SessionError> {
@@ -361,7 +384,14 @@ where
             SessionRole::Client => self.set_stage(SessionStage::SessionInit),
             SessionRole::Server => self.set_stage(SessionStage::Recv),
         }
-        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
+        self.mark_exchange_start();
+        Self::build_packet(
+            body,
+            self.id,
+            &mut self.random,
+            self.encryption.as_mut(),
+            self.packet_trace,
+        )
     }
 
     pub fn build_msg(&mut self, chunk: Bytes) -> Result<Packet<SessionBodyBytes>, SessionError> {
@@ -370,7 +400,14 @@ where
         body.set_data(chunk);
         self.set_pending_ack(body.data_len());
         self.set_stage(SessionStage::Recv);
-        Self::build_packet(body, self.id, self.encryption.as_mut(), self.packet_trace)
+        self.mark_exchange_start();
+        Self::build_packet(
+            body,
+            self.id,
+            &mut self.random,
+            self.encryption.as_mut(),
+            self.packet_trace,
+        )
     }
 
     pub fn build_fin<S>(&mut self, reason: S) -> Result<Packet<SessionBodyBytes>, SessionError>
@@ -384,12 +421,19 @@ where
             self.close_reason = Some(reason);
         }
         self.set_stage(SessionStage::Closed);
+        self.mark_exchange_start();
         let encryption = if self.stage.is_established() {
             self.encryption.as_mut()
         } else {
             None
         };
-        Self::build_packet(body, self.id, encryption, self.packet_trace)
+        Self::build_packet(
+            body,
+            self.id,
+            &mut self.random,
+            encryption,
+            self.packet_trace,
+        )
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -500,6 +544,7 @@ where
     fn build_packet<B>(
         body: B,
         session_id: SessionId,
+        random: &mut R,
         encryption: Option<&mut T>,
         packet_trace: bool,
     ) -> Result<Packet<SessionBodyBytes>, SessionError>
@@ -513,7 +558,7 @@ where
         // Get the packet kind of the body.
         let kind = body.packet_kind();
         // Create the packet header.
-        let head = SessionHeader::new(rand::random(), kind, session_id);
+        let head = SessionHeader::new(random.gen(), kind, session_id);
         // Encode the body into a buffer.
         let mut body_bytes = Vec::with_capacity(256);
         // If encryption is enabled, encrypt our session body
@@ -533,12 +578,41 @@ where
         Ok(Packet::new(head, body))
     }
 
+    ///////////////////////////////////////////////////////////////////////////
+
+    pub fn exchange_attempt(&self) -> Option<usize> {
+        self.exchange_attempt
+    }
+
+    pub fn last_exchange(&self) -> Option<Instant> {
+        self.last_exchange
+    }
+
+    fn mark_exchange_start(&mut self) {
+        self.last_exchange = Some(Instant::now());
+        self.exchange_attempt = Some(1);
+    }
+
+    fn mark_exchange_end(&mut self) {
+        self.last_exchange = Some(Instant::now());
+        self.exchange_attempt = None;
+    }
+
     pub fn prepare_retransmit(
         &mut self,
         mut packet: Packet<SessionBodyBytes>,
-    ) -> Packet<SessionBodyBytes> {
-        packet.head.set_packet_id(rand::random());
-        packet
+    ) -> Result<Packet<SessionBodyBytes>, SessionError> {
+        self.assert_stage(SessionStage::Recv);
+        if let Some(max_exchange_attempts) = self.max_exchange_attempts {
+            let attempt = self.exchange_attempt.unwrap_or(1);
+            if max_exchange_attempts >= attempt {
+                return Err(SessionError::MaxTransmitAttempts);
+            }
+            self.exchange_attempt = Some(attempt);
+        }
+        self.last_exchange = Some(Instant::now());
+        packet.head.set_packet_id(self.random.gen());
+        Ok(packet)
     }
 
     ///////////////////////////////////////////////////////////////////////////
@@ -571,5 +645,9 @@ where
             Some(ref enc) => MsgBody::packet_size_no_data() + enc.args_size(),
             _ => MsgBody::packet_size_no_data(),
         }
+    }
+
+    pub(crate) fn random(&mut self) -> &mut R {
+        &mut self.random
     }
 }
