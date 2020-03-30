@@ -88,7 +88,7 @@ where
     }
 
     pub fn max_retransmits(mut self, max: Option<usize>) -> Self {
-        assert_ne!(max, Some(0));
+        assert_ne!(max, Some(0), "max re-transmits must be greater than zero");
         self.max_retransmits = max;
         self
     }
