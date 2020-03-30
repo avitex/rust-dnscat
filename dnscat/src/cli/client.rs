@@ -70,7 +70,7 @@ pub struct App {
     retransmit_backoff: bool,
 
     /// Set the shared secret used for encryption.
-    #[structopt(long, required_unless = "insecure")]
+    #[structopt(long)]
     secret: Option<String>,
 
     /// If set, will turn off encryption/authentication.
@@ -170,16 +170,15 @@ impl App {
             dns_server_addr, self.constant
         );
 
-        let result = if let Some(ref secret) = self.secret {
-            let preshared_key = Some(Vec::from(secret.clone()));
-            let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
-            match conn.connect(dns_client, encryption).await {
+        let result = if self.insecure {
+            match conn.connect_insecure(dns_client).await {
                 Ok(client) => Ok(start_session(client, self).await),
                 Err(err) => Err(err),
             }
         } else {
-            assert!(self.insecure);
-            match conn.connect_insecure(dns_client).await {
+            let preshared_key = self.secret.clone().map(Vec::from);
+            let encryption = StandardEncryption::new_with_ephemeral(true, preshared_key).unwrap();
+            match conn.connect(dns_client, encryption).await {
                 Ok(client) => Ok(start_session(client, self).await),
                 Err(err) => Err(err),
             }
