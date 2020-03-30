@@ -198,7 +198,7 @@ where
             recv_queue: VecDeque::with_capacity(self.recv_queue_size),
             recv_buf: Bytes::new(),
         };
-        client.client_handshake().await
+        client.handshake().await
     }
 }
 

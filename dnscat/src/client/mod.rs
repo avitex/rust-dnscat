@@ -86,11 +86,11 @@ where
         &self.session
     }
 
-    async fn client_handshake(mut self) -> Result<Self, ClientError<T::Error>> {
+    async fn handshake(mut self) -> Result<Self, ClientError<T::Error>> {
         debug!("starting client handshake");
 
         if self.session.is_encrypted() {
-            self = self.client_encryption_handshake().await?;
+            self = self.encryption_handshake().await?;
         } else {
             debug!("skipping encryption handshake");
         }
@@ -101,7 +101,7 @@ where
         Ok(self)
     }
 
-    async fn client_encryption_handshake(mut self) -> Result<Self, ClientError<T::Error>> {
+    async fn encryption_handshake(mut self) -> Result<Self, ClientError<T::Error>> {
         debug!("starting encryption handshake");
 
         let packet = self.session.build_enc_init()?;

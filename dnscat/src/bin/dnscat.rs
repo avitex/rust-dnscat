@@ -2,7 +2,7 @@ use dnscat::cli::client;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
-#[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+#[structopt(version = "0.1", author = "avitex <theavitex@gmail.com>")]
 pub(crate) struct Opts {
     #[structopt(subcommand)]
     app: SubCommand,

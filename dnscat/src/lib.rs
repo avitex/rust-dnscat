@@ -1,7 +1,8 @@
 #![doc(html_root_url = "https://docs.rs/dnscat/0.1.0")]
 #![deny(
     warnings,
-    //missing_docs,
+    // TODO: v0.1.1
+    // missing_docs,
     missing_debug_implementations,
     intra_doc_link_resolution_failure,
     rust_2018_idioms,

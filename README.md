@@ -13,7 +13,7 @@ dnscat = "0.1.0"
 
 ## Client CLI Usage
 
-First install dnscat with:
+First install the standalone dnscat client with:
 
 ```text
 cargo install dnscat-client

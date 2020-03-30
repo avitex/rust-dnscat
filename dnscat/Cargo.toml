@@ -3,6 +3,12 @@ name = "dnscat"
 version = "0.1.0"
 authors = ["avitex <theavitex@gmail.com>"]
 edition = "2018"
+categories = ["network-programming"]
+description = "DNSCAT2 protocol"
+documentation = "https://docs.rs/dnscat"
+homepage = "https://github.com/avitex/dnscat"
+repository = "https://github.com/avitex/dnscat"
+license = "MIT"
 
 [[bin]]
 name = "dnscat"

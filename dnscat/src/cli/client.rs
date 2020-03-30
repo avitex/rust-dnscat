@@ -15,7 +15,7 @@ use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType}
 use crate::transport::ExchangeTransport;
 
 #[derive(StructOpt, Debug)]
-#[structopt(version = "0.1", author = "James Dyson <theavitex@gmail.com>")]
+#[structopt(version = "0.1", author = "avitex <theavitex@gmail.com>")]
 pub struct App {
     /// DNS name constant.
     constant: Name,
