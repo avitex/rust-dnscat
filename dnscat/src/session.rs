@@ -19,6 +19,8 @@ pub enum SessionError {
     Encryption(EncryptionError),
     #[fail(display = "Max re-transmit attempts reached")]
     MaxTransmitAttempts,
+    #[fail(display = "Packet body too small")]
+    PacketBodyTooSmall,
     #[fail(display = "Encryption mismatch")]
     EncryptionMismatch,
     #[fail(
@@ -521,9 +523,11 @@ where
         let (head, body) = packet.split();
         // If encryption is enabled, decrypt our session body.
         let mut body_bytes = match encryption {
-            // TODO: what if packet size < head_size?
             Some(enc) => {
                 let args_size = enc.args_size() as usize;
+                if body.0.len() < args_size {
+                    return Err(SessionError::PacketBodyTooSmall);
+                }
                 let args = &body.0[..args_size];
                 let mut data = Vec::from(&body.0[args_size..]);
                 enc.decrypt(&head, args, &mut data[..])?;
