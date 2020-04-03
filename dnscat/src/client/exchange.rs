@@ -6,42 +6,37 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures::ready;
 use futures_timer::Delay;
-use log::warn;
+use log::{trace, warn};
 use rand::Rng;
 
 use crate::encryption::Encryption;
 use crate::packet::{LazyPacket, Packet, SessionBodyBytes};
 use crate::session::Session;
-use crate::transport::ExchangeTransport;
+use crate::transport::Transport;
 
 use super::{ClientError, ClientOpts};
 
 #[derive(Debug)]
-pub(super) struct Exchange<F> {
-    future: F,
+pub(super) struct Exchange {
     delay: Option<Delay>,
     packet: Packet<SessionBodyBytes>,
+    transmit: bool,
 }
 
-impl<F> Exchange<F> {
-    pub(super) fn new<T, E, R>(
+impl Exchange {
+    pub(super) fn new<E, R>(
         packet: Packet<SessionBodyBytes>,
         session: &mut Session<E, R>,
-        transport: &mut T,
         options: &ClientOpts,
     ) -> Self
     where
-        F: Future<Output = Result<LazyPacket, T::Error>> + Unpin + 'static,
-        T: ExchangeTransport<LazyPacket, Future = F>,
         E: Encryption,
         R: Rng,
     {
-        let delay = transmit_delay(options, session);
-        let future = transport.exchange(packet.clone().translate());
         Self {
             packet,
-            future,
-            delay,
+            transmit: true,
+            delay: transmit_delay(options, session),
         }
     }
 
@@ -53,8 +48,7 @@ impl<F> Exchange<F> {
         options: &ClientOpts,
     ) -> Poll<Result<Option<Bytes>, ClientError<T::Error>>>
     where
-        F: Future<Output = Result<LazyPacket, T::Error>> + Unpin + 'static,
-        T: ExchangeTransport<LazyPacket, Future = F>,
+        T: Transport<LazyPacket>,
         E: Encryption,
         R: Rng,
     {
@@ -64,17 +58,31 @@ impl<F> Exchange<F> {
             ready!(Pin::new(delay_fut).poll(cx));
             self.delay = None;
             if exchange_attempt > 1 {
-                let packet = session.prepare_retransmit(self.packet.clone())?;
-                self.future = transport.exchange(packet.translate());
+                trace!("preparing retransmit");
+                session.prepare_retransmit(&mut self.packet)?;
             }
         }
 
-        let result = match ready!(Pin::new(&mut self.future).poll(cx)) {
+        let result = if self.transmit {
+            trace!("polling exchange send");
+            ready!(transport.poll_send(cx, self.packet.clone().translate()))
+        } else {
+            Ok(())
+        };
+
+        let result = match result {
+            Ok(()) => {
+                self.transmit = false;
+                trace!("polling exchange recv");
+                match ready!(transport.poll_recv(cx)) {
+                    Err(err) => Err(ClientError::Transport(err)),
+                    Ok(packet) => match (packet.kind(), packet.into_session()) {
+                        (_, Some(packet)) => session.handle_inbound(packet).map_err(Into::into),
+                        (kind, None) => Err(ClientError::UnexpectedKind(kind)),
+                    },
+                }
+            }
             Err(err) => Err(ClientError::Transport(err)),
-            Ok(packet) => match (packet.kind(), packet.into_session()) {
-                (_, Some(packet)) => session.handle_inbound(packet).map_err(Into::into),
-                (kind, None) => Err(ClientError::UnexpectedKind(kind)),
-            },
         };
 
         match result {
@@ -90,6 +98,7 @@ impl<F> Exchange<F> {
                     err
                 );
                 self.delay = Some(Delay::new(delay_dur));
+                self.transmit = true;
                 return self.poll(cx, session, transport, options);
             }
         }

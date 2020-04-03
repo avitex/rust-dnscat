@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future;
@@ -12,7 +11,7 @@ use crate::client::{Client, ClientBuilder};
 use crate::encryption::{Encryption, StandardEncryption};
 use crate::packet::LazyPacket;
 use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType};
-use crate::transport::ExchangeTransport;
+use crate::transport::Transport;
 
 #[derive(StructOpt, Debug)]
 #[structopt(version = "0.1", author = "avitex <theavitex@gmail.com>")]
@@ -137,7 +136,7 @@ impl App {
             BasicDnsEndpoint::new_with_defaults(self.query.clone(), self.constant.clone()).unwrap();
 
         // Build the DNS client
-        let dns_client = DnsClient::connect(dns_server_addr, Arc::new(dns_endpoint))
+        let dns_client = DnsClient::connect(dns_server_addr, dns_endpoint)
             .await
             .unwrap();
 
@@ -176,7 +175,7 @@ impl App {
                 Err(err) => Err(err),
             }
         } else {
-            let preshared_key = self.secret.clone().map(Vec::from);
+            let preshared_key = self.secret.clone().map(Into::into);
             if preshared_key.is_none() {
                 warn!("no preshared secret! (use `--secret <secret>`)");
             }
@@ -194,8 +193,7 @@ impl App {
 
 async fn start_session<T, E>(client: Client<T, E>, opts: &App)
 where
-    T: ExchangeTransport<LazyPacket> + Unpin,
-    T::Future: Unpin,
+    T: Transport<LazyPacket> + Unpin,
     E: Encryption + Unpin,
 {
     info!(

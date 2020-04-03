@@ -11,7 +11,7 @@ use salsa20::Salsa20;
 use secstr::SecStr;
 use sha3::{Digest, Sha3_256};
 
-use super::{Authenticator, Encryption, EncryptionError, PublicKey};
+use super::{Authenticator, Encryption, EncryptionAcceptor, EncryptionError, PublicKey};
 
 use crate::packet::SessionHeader;
 use crate::util::Encode;
@@ -42,10 +42,9 @@ pub struct StandardEncryption {
 impl StandardEncryption {
     pub fn new_with_ephemeral(
         is_client: bool,
-        preshared_key: Option<Vec<u8>>,
+        preshared_key: Option<SecStr>,
     ) -> Result<Self, EncryptionError> {
         let rand = rand::SystemRandom::new();
-        let preshared_key = preshared_key.map(Into::into);
         let (self_pub_key, self_priv_key) =
             agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rand)
                 .and_then(|priv_key| {
@@ -188,6 +187,29 @@ impl Encryption for StandardEncryption {
         cipher.decrypt(data);
 
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct StandardEncryptionAcceptor {
+    preshared_key: Option<SecStr>,
+}
+
+impl StandardEncryptionAcceptor {
+    pub fn new(preshared_key: Option<SecStr>) -> Self {
+        Self { preshared_key }
+    }
+}
+
+impl EncryptionAcceptor for StandardEncryptionAcceptor {
+    type Encryption = StandardEncryption;
+
+    fn accept(&mut self, client: PublicKey) -> Result<Self::Encryption, EncryptionError> {
+        let psk = self.preshared_key.clone();
+        StandardEncryption::new_with_ephemeral(false, psk).and_then(|mut encryption| {
+            encryption.handshake(client)?;
+            Ok(encryption)
+        })
     }
 }
 

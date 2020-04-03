@@ -8,7 +8,7 @@ use rand::prelude::{Rng, ThreadRng};
 use crate::encryption::{Encryption, NoEncryption};
 use crate::packet::{LazyPacket, Sequence};
 use crate::session::{Session, SessionRole, SessionStage};
-use crate::transport::ExchangeTransport;
+use crate::transport::Transport;
 
 use super::{Client, ClientError, ClientOpts};
 
@@ -124,8 +124,7 @@ where
         encryption: E,
     ) -> Result<Client<T, E, R>, ClientError<T::Error>>
     where
-        T: ExchangeTransport<LazyPacket>,
-        T::Future: Unpin,
+        T: Transport<LazyPacket>,
         E: Encryption,
     {
         self.generic_connect(transport, Some(encryption)).await
@@ -136,8 +135,7 @@ where
         transport: T,
     ) -> Result<Client<T, NoEncryption, R>, ClientError<T::Error>>
     where
-        T: ExchangeTransport<LazyPacket>,
-        T::Future: Unpin,
+        T: Transport<LazyPacket>,
     {
         self.generic_connect(transport, None).await
     }
@@ -148,8 +146,7 @@ where
         encryption: Option<E>,
     ) -> Result<Client<T, E, R>, ClientError<T::Error>>
     where
-        T: ExchangeTransport<LazyPacket>,
-        T::Future: Unpin,
+        T: Transport<LazyPacket>,
         E: Encryption,
     {
         assert!(

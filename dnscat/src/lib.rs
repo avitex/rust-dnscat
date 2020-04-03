@@ -13,7 +13,6 @@
 pub mod cli;
 pub mod client;
 pub mod encryption;
-/// Packet support for establishing a connection in a transport.
 pub mod packet;
 pub mod session;
 pub mod transport;

@@ -603,8 +603,8 @@ where
 
     pub fn prepare_retransmit(
         &mut self,
-        mut packet: Packet<SessionBodyBytes>,
-    ) -> Result<Packet<SessionBodyBytes>, SessionError> {
+        packet: &mut Packet<SessionBodyBytes>,
+    ) -> Result<(), SessionError> {
         self.assert_stage(SessionStage::Recv);
         if let Some(max_exchange_attempts) = self.max_exchange_attempts {
             let attempt = self.exchange_attempt.unwrap_or(1);
@@ -615,7 +615,7 @@ where
         }
         self.last_exchange = Some(Instant::now());
         packet.head.set_packet_id(self.random.gen());
-        Ok(packet)
+        Ok(())
     }
 
     ///////////////////////////////////////////////////////////////////////////

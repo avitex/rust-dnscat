@@ -2,8 +2,7 @@ use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 
 use bytes::{Bytes, BytesMut};
 use futures::ready;
@@ -20,7 +19,7 @@ use trust_dns_proto::{
     xfer::{DnsHandle, DnsRequestOptions, DnsResponse},
 };
 
-use crate::transport::{Datagram, DatagramError, ExchangeTransport, SplitDatagram};
+use crate::transport::{Datagram, DatagramError, SplitDatagram, Transport};
 use crate::util::hex;
 
 use super::{DnsEndpoint, DnsTransportError};
@@ -32,36 +31,30 @@ const DEFAULT_LOOKUP_OPTIONS: DnsRequestOptions = DnsRequestOptions {
 
 const MULTI_NAME_RESPONSE: bool = false;
 
-pub struct DnsClient<H, E> {
-    dns_handle: H,
-    runtime_handle: runtime::Handle,
-    endpoint: Arc<E>,
-}
-
-impl<H, E> Clone for DnsClient<H, E>
+pub struct DnsClient<H, E, D>
 where
-    H: DnsHandle,
+    D: Datagram,
 {
-    fn clone(&self) -> Self {
-        Self {
-            dns_handle: self.dns_handle.clone(),
-            runtime_handle: self.runtime_handle.clone(),
-            endpoint: self.endpoint.clone(),
-        }
-    }
+    dns_handle: H,
+    endpoint: E,
+    runtime_handle: runtime::Handle,
+    send_task: Option<Waker>,
+    recv_task: Option<Waker>,
+    exchange: Option<ExchangeFuture<D>>,
 }
 
-impl<E> DnsClient<AsyncClient<UdpResponse>, E>
+impl<E, D> DnsClient<AsyncClient<UdpResponse>, E, D>
 where
     E: DnsEndpoint,
+    D: Datagram,
 {
-    pub async fn connect(addr: SocketAddr, endpoint: Arc<E>) -> Result<Self, ProtoError> {
+    pub async fn connect(addr: SocketAddr, endpoint: E) -> Result<Self, ProtoError> {
         Self::connect_with_runtime(addr, endpoint, runtime::Handle::current()).await
     }
 
     async fn connect_with_runtime(
         addr: SocketAddr,
-        endpoint: Arc<E>,
+        endpoint: E,
         rt: runtime::Handle,
     ) -> Result<Self, ProtoError> {
         let stream = UdpClientStream::<UdpSocket>::new(addr);
@@ -71,20 +64,24 @@ where
     }
 }
 
-impl<H, E> DnsClient<H, E>
+impl<H, E, D> DnsClient<H, E, D>
 where
     H: DnsHandle,
     E: DnsEndpoint,
+    D: Datagram,
 {
-    pub fn new(dns_handle: H, endpoint: Arc<E>, runtime_handle: runtime::Handle) -> Self {
+    pub fn new(dns_handle: H, endpoint: E, runtime_handle: runtime::Handle) -> Self {
         Self {
+            recv_task: None,
+            send_task: None,
+            exchange: None,
             endpoint,
             dns_handle,
             runtime_handle,
         }
     }
 
-    fn parse_response<D: Datagram>(
+    fn parse_response(
         &mut self,
         answers: Vec<Record>,
         record_type: RecordType,
@@ -172,22 +169,53 @@ where
     }
 }
 
-impl<H, E, CS, SC> ExchangeTransport<CS, SC> for DnsClient<H, E>
+impl<H, E, D> Transport<D> for DnsClient<H, E, D>
 where
     H: DnsHandle,
     E: DnsEndpoint,
-    CS: Datagram<Error = SC::Error>,
-    SC: Datagram,
-    SC::Error: Unpin,
+    D: Datagram,
+    D::Error: Unpin,
 {
-    type Error = DnsTransportError<SC::Error>;
+    type Error = DnsTransportError<D::Error>;
 
-    type Future = ExchangeFuture<H, E, SC>;
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<D, Self::Error>> {
+        match self.exchange.take() {
+            None => {
+                self.recv_task = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            Some(mut exchange) => match exchange.poll(cx, self) {
+                Poll::Pending => {
+                    self.exchange = Some(exchange);
+                    Poll::Pending
+                }
+                Poll::Ready(result) => {
+                    if let Some(send_task) = self.send_task.take() {
+                        send_task.wake();
+                    }
+                    Poll::Ready(result)
+                }
+            },
+        }
+    }
 
-    fn exchange(&mut self, datagram: CS) -> Self::Future {
+    fn poll_send(&mut self, cx: &mut Context<'_>, datagram: D) -> Poll<Result<(), Self::Error>> {
+        if self.exchange.is_some() {
+            self.send_task = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
         let mut request_data = BytesMut::new();
         datagram.encode(&mut request_data);
-        ExchangeFuture::new(self, request_data.freeze())
+        let mut future = ExchangeFuture::new(self, request_data.freeze());
+        let future = match future.poll(cx, self) {
+            Poll::Pending => future,
+            Poll::Ready(result) => ExchangeFuture::Ready(Some(result)),
+        };
+        self.exchange = Some(future);
+        if let Some(recv_task) = self.recv_task.take() {
+            recv_task.wake();
+        }
+        Poll::Ready(Ok(()))
     }
 
     fn max_datagram_size(&self) -> usize {
@@ -195,9 +223,10 @@ where
     }
 }
 
-impl<H, E> fmt::Debug for DnsClient<H, E>
+impl<H, E, D> fmt::Debug for DnsClient<H, E, D>
 where
     E: fmt::Debug,
+    D: Datagram,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("DnsClient").field(&self.endpoint).finish()
@@ -206,58 +235,56 @@ where
 
 ///////////////////////////////////////////////////////////////////////////////
 
-pub enum ExchangeFuture<H, E, D>
+#[derive(Debug)]
+enum ExchangeFuture<D>
 where
     D: Datagram,
 {
-    Future {
-        client: DnsClient<H, E>,
+    Ready(Option<Result<D, DnsTransportError<D::Error>>>),
+    Pending {
         record_type: RecordType,
-        fut: JoinHandle<Result<DnsResponse, ProtoError>>,
+        request_fut: JoinHandle<Result<DnsResponse, ProtoError>>,
     },
-    Error(Option<DnsTransportError<D::Error>>),
 }
 
-impl<H, E, D> ExchangeFuture<H, E, D>
+impl<D> ExchangeFuture<D>
 where
-    H: DnsHandle,
-    E: DnsEndpoint,
     D: Datagram,
 {
-    pub fn new(client: &mut DnsClient<H, E>, request_data: Bytes) -> Self {
+    fn new<H, E>(client: &mut DnsClient<H, E, D>, request_data: Bytes) -> Self
+    where
+        H: DnsHandle,
+        E: DnsEndpoint,
+    {
         match client.endpoint.build_request(request_data) {
             Ok((name, record_type)) => {
                 let query = Query::query(name, record_type);
-                let fut = client.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
-                let fut = client.runtime_handle.spawn(fut);
-                Self::Future {
-                    client: client.clone(),
+                let request_fut = client.dns_handle.lookup(query, DEFAULT_LOOKUP_OPTIONS);
+                let request_fut = client.runtime_handle.spawn(request_fut);
+                ExchangeFuture::Pending {
                     record_type,
-                    fut,
+                    request_fut,
                 }
             }
-            Err(err) => Self::Error(Some(DnsTransportError::Endpoint(err))),
+            Err(err) => ExchangeFuture::Ready(Some(Err(DnsTransportError::Endpoint(err)))),
         }
     }
-}
 
-impl<H, E, D> Future for ExchangeFuture<H, E, D>
-where
-    H: DnsHandle,
-    E: DnsEndpoint,
-    D: Datagram,
-    D::Error: Unpin,
-{
-    type Output = Result<D, DnsTransportError<D::Error>>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.get_mut() {
-            Self::Future {
-                fut,
-                client,
+    fn poll<H, E>(
+        &mut self,
+        cx: &mut Context<'_>,
+        client: &mut DnsClient<H, E, D>,
+    ) -> Poll<Result<D, DnsTransportError<D::Error>>>
+    where
+        H: DnsHandle,
+        E: DnsEndpoint,
+    {
+        match self {
+            Self::Pending {
+                request_fut,
                 record_type,
             } => {
-                let result = ready!(Pin::new(fut).poll(cx))
+                let result = ready!(Pin::new(request_fut).poll(cx))
                     .expect("failed to execute dns lookup future")
                     .map_err(DnsTransportError::Proto)
                     .and_then(|mut response| {
@@ -266,20 +293,10 @@ where
                     });
                 Poll::Ready(result)
             }
-            Self::Error(err_opt) => {
-                let err = err_opt.take().expect("exchange future already consumed");
-                Poll::Ready(Err(err))
+            Self::Ready(result_opt) => {
+                let result = result_opt.take().expect("exchange future already consumed");
+                Poll::Ready(result)
             }
         }
-    }
-}
-
-impl<H, E, D> fmt::Debug for ExchangeFuture<H, E, D>
-where
-    E: fmt::Debug,
-    D: Datagram,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ExchangeFuture")
     }
 }

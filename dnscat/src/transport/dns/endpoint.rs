@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-
 use bytes::Bytes;
 use failure::Fail;
 use rand::{rngs::OsRng, seq::SliceRandom, Rng};
@@ -12,29 +10,29 @@ use super::{Labeller, NameEncoder, NameEncoderError};
 
 pub type DnsEndpointRequest = (Name, RecordType);
 
-pub trait DnsEndpoint: Send + Sync + 'static {
+pub trait DnsEndpoint {
     fn supported_queries() -> &'static [RecordType];
 
     /// Returns the max size for request data.
     fn max_request_size(&self) -> usize;
 
     /// Build an endpoint request given data.
-    fn build_request(&self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError>;
+    fn build_request(&mut self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError>;
 
     /// Parse an endpoint request into data.
-    fn parse_request(&self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError>;
+    fn parse_request(&mut self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError>;
 
     /// Build a MX response given data.
-    fn build_mx_response(&self, data: Bytes) -> Result<Name, DnsEndpointError>;
+    fn build_mx_response(&mut self, data: Bytes) -> Result<Name, DnsEndpointError>;
 
     /// Parse a MX response into data.
-    fn parse_mx_response(&self, name: Name) -> Result<Bytes, DnsEndpointError>;
+    fn parse_mx_response(&mut self, name: Name) -> Result<Bytes, DnsEndpointError>;
 
     /// Build a CNAME response given data.
-    fn build_cname_response(&self, data: Bytes) -> Result<Name, DnsEndpointError>;
+    fn build_cname_response(&mut self, data: Bytes) -> Result<Name, DnsEndpointError>;
 
     /// Parse a CNAME response into data.
-    fn parse_cname_response(&self, name: Name) -> Result<Bytes, DnsEndpointError>;
+    fn parse_cname_response(&mut self, name: Name) -> Result<Bytes, DnsEndpointError>;
 }
 
 #[derive(Debug, Fail)]
@@ -56,15 +54,10 @@ impl From<NameEncoderError> for DnsEndpointError {
 }
 
 #[derive(Debug)]
-struct BasicInner<R> {
+pub struct BasicDnsEndpoint<R: Rng = OsRng> {
     random: R,
     name_encoder: NameEncoder,
     query_types: Vec<RecordType>,
-}
-
-#[derive(Debug)]
-pub struct BasicDnsEndpoint<R: Rng = OsRng> {
-    inner: Arc<Mutex<BasicInner<R>>>,
     max_request_size: usize,
 }
 
@@ -80,7 +73,7 @@ impl BasicDnsEndpoint {
 
 impl<R> BasicDnsEndpoint<R>
 where
-    R: Rng + Send + 'static,
+    R: Rng,
 {
     pub fn new(
         query_types: Vec<RecordType>,
@@ -95,33 +88,18 @@ where
             return Err(DnsEndpointError::UnsupportedQuery(*query));
         }
         let max_request_size = name_encoder.max_hex_data() as usize;
-        let inner = BasicInner {
+        Ok(Self {
             random,
             query_types,
             name_encoder,
-        };
-        Ok(Self {
-            inner: Arc::new(Mutex::new(inner)),
             max_request_size,
         })
-    }
-
-    fn lock_inner(&self) -> MutexGuard<'_, BasicInner<R>> {
-        self.inner.lock().expect("endpoint inner poisoned")
-    }
-
-    fn decode_name(&self, name: &Name) -> Result<Bytes, NameEncoderError> {
-        self.lock_inner().name_encoder.decode_hex(name)
-    }
-
-    fn encode_name(&self, bytes: &[u8]) -> Result<Name, NameEncoderError> {
-        self.lock_inner().name_encoder.encode_hex(bytes)
     }
 }
 
 impl<R> DnsEndpoint for BasicDnsEndpoint<R>
 where
-    R: Rng + Send + 'static,
+    R: Rng,
 {
     fn supported_queries() -> &'static [RecordType] {
         &[
@@ -137,34 +115,32 @@ where
         self.max_request_size
     }
 
-    fn build_request(&self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError> {
-        let BasicInner {
-            ref mut name_encoder,
-            ref query_types,
-            ref mut random,
-        } = *self.lock_inner();
-        let name_data = name_encoder.encode_hex(&data[..])?;
-        let query_type = query_types.choose(random).unwrap();
+    fn build_request(&mut self, data: Bytes) -> Result<DnsEndpointRequest, DnsEndpointError> {
+        let name_data = self.name_encoder.encode_hex(&data[..])?;
+        let query_type = self
+            .query_types
+            .choose(&mut self.random)
+            .expect("random query type");
         Ok((name_data, *query_type))
     }
 
-    fn parse_request(&self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError> {
-        Ok(self.decode_name(&req.0)?)
+    fn parse_request(&mut self, req: DnsEndpointRequest) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.name_encoder.decode_hex(&req.0)?)
     }
 
-    fn build_mx_response(&self, data: Bytes) -> Result<Name, DnsEndpointError> {
-        Ok(self.encode_name(&data[..])?)
+    fn build_mx_response(&mut self, data: Bytes) -> Result<Name, DnsEndpointError> {
+        Ok(self.name_encoder.encode_hex(&data[..])?)
     }
 
-    fn parse_mx_response(&self, name: Name) -> Result<Bytes, DnsEndpointError> {
-        Ok(self.decode_name(&name)?)
+    fn parse_mx_response(&mut self, name: Name) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.name_encoder.decode_hex(&name)?)
     }
 
-    fn build_cname_response(&self, data: Bytes) -> Result<Name, DnsEndpointError> {
-        Ok(self.encode_name(&data[..])?)
+    fn build_cname_response(&mut self, data: Bytes) -> Result<Name, DnsEndpointError> {
+        Ok(self.name_encoder.encode_hex(&data[..])?)
     }
 
-    fn parse_cname_response(&self, name: Name) -> Result<Bytes, DnsEndpointError> {
-        Ok(self.decode_name(&name)?)
+    fn parse_cname_response(&mut self, name: Name) -> Result<Bytes, DnsEndpointError> {
+        Ok(self.name_encoder.decode_hex(&name)?)
     }
 }

@@ -3,7 +3,7 @@ mod split;
 
 pub mod dns;
 
-use std::future::Future;
+use std::task::{Context, Poll};
 
 use failure::Fail;
 
@@ -40,19 +40,17 @@ impl<D: Fail> From<SplitDatagramError> for DatagramError<D> {
     }
 }
 
-pub trait ExchangeTransport<CS, SC = CS>
+pub trait Transport<D>
 where
-    CS: Datagram<Error = SC::Error>,
-    SC: Datagram,
+    D: Datagram,
 {
-    /// Possible error that can occur during the exchange.
     type Error: Fail;
 
-    /// Future representing an asynchronous exchange.
-    type Future: Future<Output = Result<SC, Self::Error>> + 'static;
+    /// Poll receiving a datagram.
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<D, Self::Error>>;
 
-    /// Exchange a client datagram for a server datagram.
-    fn exchange(&mut self, datagram: CS) -> Self::Future;
+    /// Poll sending a datagram.
+    fn poll_send(&mut self, cx: &mut Context<'_>, datagram: D) -> Poll<Result<(), Self::Error>>;
 
     /// Returns the max datagram size this transport supports.
     fn max_datagram_size(&self) -> usize;

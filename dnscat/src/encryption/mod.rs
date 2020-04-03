@@ -8,7 +8,7 @@ use generic_array::GenericArray;
 use crate::packet::SessionHeader;
 
 #[cfg(feature = "encryption")]
-pub use self::standard::StandardEncryption;
+pub use self::standard::{StandardEncryption, StandardEncryptionAcceptor};
 
 pub type PublicKey = GenericArray<u8, U64>;
 pub type Authenticator = GenericArray<u8, U32>;
@@ -55,6 +55,12 @@ pub trait Encryption {
     ) -> Result<(), EncryptionError>;
 }
 
+pub trait EncryptionAcceptor {
+    type Encryption: Encryption;
+
+    fn accept(&mut self, client: PublicKey) -> Result<Self::Encryption, EncryptionError>;
+}
+
 #[derive(Debug)]
 pub enum NoEncryption {}
 
@@ -95,5 +101,13 @@ impl Encryption for NoEncryption {
         _data: &mut [u8],
     ) -> Result<(), EncryptionError> {
         unreachable!()
+    }
+}
+
+impl EncryptionAcceptor for NoEncryption {
+    type Encryption = NoEncryption;
+
+    fn accept(&mut self, _client: PublicKey) -> Result<Self::Encryption, EncryptionError> {
+        unimplemented!()
     }
 }

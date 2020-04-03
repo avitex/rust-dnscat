@@ -1,3 +1,5 @@
+//! Packet support for establishing a connection in a transport.
+
 mod ping;
 mod session;
 

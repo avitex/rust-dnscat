@@ -20,7 +20,7 @@ use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
 use crate::encryption::Encryption;
 use crate::packet::{LazyPacket, Packet, PacketKind, SessionBodyBytes};
 use crate::session::{Session, SessionError};
-use crate::transport::ExchangeTransport;
+use crate::transport::Transport;
 
 use self::exchange::Exchange;
 
@@ -62,12 +62,12 @@ struct ClientOpts {
 #[derive(Debug)]
 pub struct Client<T, E = (), R = ThreadRng>
 where
-    T: ExchangeTransport<LazyPacket>,
+    T: Transport<LazyPacket>,
 {
     transport: T,
     session: Session<E, R>,
     options: ClientOpts,
-    exchange: Option<Exchange<T::Future>>,
+    exchange: Option<Exchange>,
     poll_delay: Option<Delay>,
     send_buf: Bytes,
     recv_buf: Bytes,
@@ -77,8 +77,7 @@ where
 
 impl<T, E, R> Client<T, E, R>
 where
-    T: ExchangeTransport<LazyPacket>,
-    T::Future: Unpin,
+    T: Transport<LazyPacket>,
     E: Encryption,
     R: Rng,
 {
@@ -154,12 +153,7 @@ where
 
     fn start_exchange(&mut self, packet: Packet<SessionBodyBytes>) {
         assert!(self.exchange.is_none());
-        self.exchange = Some(Exchange::new(
-            packet,
-            &mut self.session,
-            &mut self.transport,
-            &self.options,
-        ));
+        self.exchange = Some(Exchange::new(packet, &mut self.session, &self.options));
     }
 
     fn start_next_chunk_exchange(&mut self) -> Result<(), ClientError<T::Error>> {
@@ -219,7 +213,7 @@ where
         // If the poll exchange returns `Poll::Ready(Ok(true))` we know
         // it pushed at least one chunk to the recv queue so we return it.
         if self.exchange.is_some() && ready!(self.poll_exchange(cx))? {
-            let chunk = self.recv_queue_pop().unwrap();
+            let chunk = self.recv_queue_pop().expect("expected chunk");
             return Poll::Ready(Ok(chunk));
         }
         // There is no exchange currently running so we set a delay
@@ -228,7 +222,7 @@ where
             self.poll_delay = Some(Delay::new(self.options.max_delay));
         }
         // We poll the delay to see if we should send an empty chunk.
-        let poll_delay = self.poll_delay.as_mut().unwrap();
+        let poll_delay = self.poll_delay.as_mut().expect("expected delay");
         match Pin::new(poll_delay).poll(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(()) => {
@@ -299,8 +293,7 @@ where
 
 impl<T, E, R> AsyncRead for Client<T, E, R>
 where
-    T: ExchangeTransport<LazyPacket> + Unpin,
-    T::Future: Unpin,
+    T: Transport<LazyPacket> + Unpin,
     E: Encryption + Unpin,
     R: Rng + Unpin,
 {
@@ -315,8 +308,7 @@ where
 
 impl<T, E, R> AsyncWrite for Client<T, E, R>
 where
-    T: ExchangeTransport<LazyPacket> + Unpin,
-    T::Future: Unpin,
+    T: Transport<LazyPacket> + Unpin,
     E: Encryption + Unpin,
     R: Rng + Unpin,
 {
@@ -341,8 +333,7 @@ where
 
 impl<T, E, R> TokioAsyncRead for Client<T, E, R>
 where
-    T: ExchangeTransport<LazyPacket> + Unpin,
-    T::Future: Unpin,
+    T: Transport<LazyPacket> + Unpin,
     E: Encryption + Unpin,
     R: Rng + Unpin,
 {
@@ -357,8 +348,7 @@ where
 
 impl<T, E, R> TokioAsyncWrite for Client<T, E, R>
 where
-    T: ExchangeTransport<LazyPacket> + Unpin,
-    T::Future: Unpin,
+    T: Transport<LazyPacket> + Unpin,
     E: Encryption + Unpin,
     R: Rng + Unpin,
 {
