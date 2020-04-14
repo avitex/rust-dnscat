@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/avitex/rust-dnscat.svg?branch=master)](https://travis-ci.org/avitex/rust-dnscat)
+[![Build Status](https://travis-ci.com/avitex/rust-dnscat.svg?branch=master)](https://travis-ci.com/avitex/rust-dnscat)
 [![Crate](https://img.shields.io/crates/v/dnscat.svg)](https://crates.io/crates/dnscat)
 [![Docs](https://docs.rs/dnscat/badge.svg)](https://docs.rs/dnscat)
 
