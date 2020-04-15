@@ -43,7 +43,7 @@ trust-dns-proto = "~0.19"
 rand = "~0.7"
 itertools = "~0.9"
 failure = "~0.1"
-generic-array = "~0.12"
+generic-array = "~0.14"
 
 # Client
 trust-dns-client = { version = "~0.19", optional = true }
