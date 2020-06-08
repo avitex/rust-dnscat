@@ -56,7 +56,7 @@ trust-dns-resolver = { version = "~0.19", optional = true }
 
 # Encryption
 sha3 = { version = "0.8", optional = true }
-salsa20 = { version = "0.4", optional = true }
+salsa20 = { version = "0.5", optional = true }
 ring = { version = "0.16", optional = true }
 constant_time_eq = { version = "0.1", optional = true }
 secstr = { version = "0.4", optional = true }
