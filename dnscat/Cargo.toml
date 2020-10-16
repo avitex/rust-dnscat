@@ -50,7 +50,7 @@ trust-dns-client = { version = "~0.19", optional = true }
 
 # CLI
 structopt = { version = "~0.3", optional = true }
-env_logger = { version = "~0.7", optional = true }
+env_logger = { version = "~0.8", optional = true }
 dotenv = { version = "~0.15", optional = true }
 trust-dns-resolver = { version = "~0.19", optional = true }
 
@@ -65,4 +65,4 @@ secstr = { version = "0.4", optional = true }
 tokio = { version = "~0.2", features = ["full"] }
 rand_pcg = "~0.2"
 dotenv = "~0.15"
-env_logger = "~0.7"
+env_logger = "~0.8"
