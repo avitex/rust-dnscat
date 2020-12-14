@@ -63,6 +63,6 @@ secstr = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tokio = { version = "~0.2", features = ["full"] }
-rand_pcg = "~0.2"
+rand_pcg = "~0.3"
 dotenv = "~0.15"
 env_logger = "~0.7"
