@@ -36,7 +36,7 @@ client-cli = [
 log = "~0.4"
 bytes = "~0.5"
 bitflags = "~1.2"
-tokio = "~0.2"
+tokio = "~1.0"
 futures = "~0.3"
 futures-timer = "~3.0"
 trust-dns-proto = "~0.19"
@@ -62,7 +62,7 @@ constant_time_eq = { version = "0.1", optional = true }
 secstr = { version = "0.4", optional = true }
 
 [dev-dependencies]
-tokio = { version = "~0.2", features = ["full"] }
+tokio = { version = "~1.0", features = ["full"] }
 rand_pcg = "~0.2"
 dotenv = "~0.15"
 env_logger = "~0.7"
