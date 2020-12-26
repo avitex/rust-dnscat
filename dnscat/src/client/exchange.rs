@@ -115,7 +115,7 @@ where
     E: Encryption,
 {
     if opts.random_delay {
-        session.random().gen_range(opts.min_delay, opts.max_delay)
+        session.random().gen_range(opts.min_delay..opts.max_delay)
     } else if opts.retransmit_backoff {
         Duration::from_secs(2u64.pow(attempt as u32))
     } else {
@@ -136,7 +136,7 @@ where
     let dur = if opts.random_delay {
         session
             .random()
-            .gen_range(opts.min_delay, opts.max_delay)
+            .gen_range(opts.min_delay..opts.max_delay)
             .checked_sub(dur_since_last)
     } else if dur_since_last < opts.min_delay {
         Some(opts.min_delay - dur_since_last)
