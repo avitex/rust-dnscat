@@ -282,7 +282,7 @@ where
                 return None;
             }
             let size = if let Some(ref mut rng) = self.random {
-                rng.gen_range(min_size, self.max_size + 1)
+                rng.gen_range(min_size..(self.max_size + 1))
             } else {
                 self.max_size
             };

@@ -15,7 +15,7 @@ use trust_dns_proto::{
     error::ProtoError,
     op::Query,
     rr::{Record, RecordType},
-    udp::{UdpClientStream, UdpResponse},
+    udp::UdpClientStream,
     xfer::{DnsHandle, DnsRequestOptions, DnsResponse},
 };
 
@@ -25,6 +25,7 @@ use crate::util::hex;
 use super::{DnsEndpoint, DnsTransportError};
 
 const DEFAULT_LOOKUP_OPTIONS: DnsRequestOptions = DnsRequestOptions {
+    use_edns: true,
     // We don't currently care about mDNS responses.
     expects_multiple_responses: false,
 };
@@ -43,7 +44,7 @@ where
     exchange: Option<ExchangeFuture<D>>,
 }
 
-impl<E, D> DnsClient<AsyncClient<UdpResponse>, E, D>
+impl<E, D> DnsClient<AsyncClient, E, D>
 where
     E: DnsEndpoint,
     D: Datagram,
@@ -66,7 +67,7 @@ where
 
 impl<H, E, D> DnsClient<H, E, D>
 where
-    H: DnsHandle,
+    H: DnsHandle<Error = ProtoError>,
     E: DnsEndpoint,
     D: Datagram,
 {
@@ -91,7 +92,7 @@ where
         }
         // We will filter for the record type we requested, and
         // drop record types we don't care about silently later.
-        let answers = answers.into_iter().map(|r| r.unwrap_rdata());
+        let answers = answers.into_iter().map(|r| r.into_data());
         // Parse the record data depending on the record type.
         let mut bytes = match record_type {
             RecordType::A => {
@@ -171,7 +172,7 @@ where
 
 impl<H, E, D> Transport<D> for DnsClient<H, E, D>
 where
-    H: DnsHandle,
+    H: DnsHandle<Error = ProtoError>,
     E: DnsEndpoint,
     D: Datagram,
     D::Error: Unpin,
@@ -253,7 +254,7 @@ where
 {
     fn new<H, E>(client: &mut DnsClient<H, E, D>, request_data: Bytes) -> Self
     where
-        H: DnsHandle,
+        H: DnsHandle<Error = ProtoError>,
         E: DnsEndpoint,
     {
         match client.endpoint.build_request(request_data) {
@@ -276,7 +277,7 @@ where
         client: &mut DnsClient<H, E, D>,
     ) -> Poll<Result<D, DnsTransportError<D::Error>>>
     where
-        H: DnsHandle,
+        H: DnsHandle<Error = ProtoError>,
         E: DnsEndpoint,
     {
         match self {

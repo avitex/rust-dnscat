@@ -8,14 +8,14 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 use std::{cmp, io};
 
-use bytes::{Buf, Bytes};
+use bytes::Bytes;
 use failure::Fail;
 use futures::io::{AsyncRead, AsyncWrite};
 use futures::{future, ready};
 use futures_timer::Delay;
 use log::{debug, warn};
 use rand::prelude::{Rng, ThreadRng};
-use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
+use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite, ReadBuf};
 
 use crate::encryption::Encryption;
 use crate::packet::{LazyPacket, Packet, PacketKind, SessionBodyBytes};
@@ -193,14 +193,14 @@ where
     fn do_poll_read(
         &mut self,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<usize, ClientError<T::Error>>> {
         if self.recv_buf.is_empty() {
             self.recv_buf = ready!(self.do_poll_recv(cx))?;
         }
-        let len = cmp::min(buf.len(), self.recv_buf.len());
-        self.recv_buf.split_to(len).copy_to_slice(&mut buf[..len]);
-        Poll::Ready(Ok(len))
+        let len = cmp::min(buf.capacity(), self.recv_buf.len());
+        buf.put_slice(&self.recv_buf[..len]);
+        Poll::Ready(Ok(buf.filled().len()))
     }
 
     fn do_poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Result<Bytes, ClientError<T::Error>>> {
@@ -302,7 +302,9 @@ where
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.get_mut().do_poll_read(cx, buf).map_err(Into::into)
+        self.get_mut()
+            .do_poll_read(cx, &mut ReadBuf::new(buf))
+            .map_err(Into::into)
     }
 }
 
@@ -340,9 +342,12 @@ where
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, io::Error>> {
-        self.get_mut().do_poll_read(cx, buf).map_err(Into::into)
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        self.get_mut()
+            .do_poll_read(cx, buf)
+            .map_ok(drop)
+            .map_err(Into::into)
     }
 }
 

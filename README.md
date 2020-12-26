@@ -22,7 +22,7 @@ cargo install dnscat-client
 ```text
 $ dnscat-client -h
 dnscat-client 0.1
-avitex <theavitex@gmail.com>
+avitex <avitex@wfxlabs.com>
 DNSCAT client
 
 USAGE:

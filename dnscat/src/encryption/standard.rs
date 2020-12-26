@@ -6,7 +6,7 @@ use generic_array::typenum::{U32, U65};
 use generic_array::{sequence::Lengthen, GenericArray};
 use ring::agreement::{self, agree_ephemeral};
 use ring::rand;
-use salsa20::stream_cipher::{NewStreamCipher, StreamCipher};
+use salsa20::cipher::{NewStreamCipher, StreamCipher};
 use salsa20::Salsa20;
 use secstr::SecStr;
 use sha3::{Digest, Sha3_256};
@@ -238,24 +238,24 @@ impl StreamKeys {
         let mut hash = Sha3_256::new();
 
         // client_write
-        hash.input(key);
-        hash.input("client_write_key");
-        let client_write = hash.result_reset();
+        hash.update(key);
+        hash.update("client_write_key");
+        let client_write = hash.finalize_reset();
 
         // client_mac
-        hash.input(key);
-        hash.input("client_mac_key");
-        let client_mac = hash.result_reset();
+        hash.update(key);
+        hash.update("client_mac_key");
+        let client_mac = hash.finalize_reset();
 
         // server_write
-        hash.input(key);
-        hash.input("server_write_key");
-        let server_write = hash.result_reset();
+        hash.update(key);
+        hash.update("server_write_key");
+        let server_write = hash.finalize_reset();
 
         // server_mac
-        hash.input(key);
-        hash.input("server_mac_key");
-        let server_mac = hash.result();
+        hash.update(key);
+        hash.update("server_mac_key");
+        let server_mac = hash.finalize();
 
         Self {
             client_write,
@@ -283,22 +283,22 @@ fn calc_authenticator(
 ) -> Authenticator {
     let mut hash = Sha3_256::new();
     if for_client {
-        hash.input("client");
+        hash.update("client");
     } else {
-        hash.input("server");
+        hash.update("server");
     }
-    hash.input(shared_key);
+    hash.update(shared_key);
     if is_client {
-        hash.input(pubkey_self);
-        hash.input(pubkey_peer);
+        hash.update(pubkey_self);
+        hash.update(pubkey_peer);
     } else {
-        hash.input(pubkey_peer);
-        hash.input(pubkey_self);
+        hash.update(pubkey_peer);
+        hash.update(pubkey_self);
     }
     if let Some(preshared_key) = preshared_key {
-        hash.input(preshared_key);
+        hash.update(preshared_key);
     }
-    hash.result()
+    hash.finalize()
 }
 
 fn calc_signature(
@@ -312,12 +312,12 @@ fn calc_signature(
 
     let mut hash = Sha3_256::new();
 
-    hash.input(mac_key);
-    hash.input(&head_bytes[..]);
-    hash.input(nonce);
-    hash.input(ciphertext);
+    hash.update(mac_key);
+    hash.update(&head_bytes[..]);
+    hash.update(nonce);
+    hash.update(ciphertext);
 
-    let res = hash.result();
+    let res = hash.finalize();
 
     [res[0], res[1], res[2], res[3], res[4], res[5]]
 }

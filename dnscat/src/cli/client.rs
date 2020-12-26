@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::process::Stdio;
 use std::time::Duration;
 
-use futures::future;
+use futures::{future, pin_mut};
 use log::{error, info, warn};
 use structopt::StructOpt;
 use tokio::{io, process};
@@ -14,7 +14,7 @@ use crate::transport::dns::{self, BasicDnsEndpoint, DnsClient, Name, RecordType}
 use crate::transport::Transport;
 
 #[derive(StructOpt, Debug)]
-#[structopt(version = "0.1", author = "avitex <theavitex@gmail.com>")]
+#[structopt(version = "0.1", author = "avitex <avitex@wfxlabs.com>")]
 pub struct App {
     /// DNS name constant.
     constant: Name,
@@ -236,6 +236,9 @@ async fn start_rw<R1, W1, R2, W2>(
 {
     let to_server_fut = io::copy(&mut read, &mut client_write);
     let to_client_fut = io::copy(&mut client_read, &mut write);
+
+    pin_mut!(to_server_fut);
+    pin_mut!(to_client_fut);
 
     match future::select(to_server_fut, to_client_fut).await {
         future::Either::Left((result, _)) => result.unwrap(),
