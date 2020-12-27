@@ -39,20 +39,20 @@ bitflags = "1.2"
 tokio = "1.0"
 futures = "0.3"
 futures-timer = "3.0"
-trust-dns-proto =  { git = "https://github.com/messense/trust-dns", branch = "tokio-1" }
+trust-dns-proto =  { git = "https://github.com/bluejekyll/trust-dns", branch = "master" }
 rand = "0.8"
 itertools = "0.9"
 failure = "0.1"
 generic-array = "0.14"
 
 # Client
-trust-dns-client = { git = "https://github.com/messense/trust-dns", branch = "tokio-1", optional = true }
+trust-dns-client = { git = "https://github.com/bluejekyll/trust-dns", branch = "master", optional = true }
 
 # CLI
 structopt = { version = "0.3", optional = true }
 env_logger = { version = "0.8", optional = true }
 dotenv = { version = "0.15", optional = true }
-trust-dns-resolver = { git = "https://github.com/messense/trust-dns", branch = "tokio-1", optional = true }
+trust-dns-resolver = { git = "https://github.com/bluejekyll/trust-dns", branch = "master", optional = true }
 
 # Encryption
 sha3 = { version = "0.9", optional = true }
