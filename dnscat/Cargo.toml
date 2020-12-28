@@ -41,7 +41,7 @@ futures = "~0.3"
 futures-timer = "~3.0"
 trust-dns-proto = "~0.19"
 rand = "~0.7"
-itertools = "~0.9"
+itertools = "~0.10"
 failure = "~0.1"
 generic-array = "~0.12"
 
