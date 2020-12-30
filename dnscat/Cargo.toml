@@ -46,7 +46,7 @@ failure = "~0.1"
 generic-array = "~0.12"
 
 # Client
-trust-dns-client = { version = "~0.19", optional = true }
+trust-dns-client = { version = "~0.20", optional = true }
 
 # CLI
 structopt = { version = "~0.3", optional = true }
