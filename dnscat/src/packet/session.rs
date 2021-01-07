@@ -1,6 +1,6 @@
 use std::{fmt, mem};
 
-use bytes::{BufMut, Bytes};
+use bytes::{Buf, BufMut, Bytes};
 
 use crate::encryption::{Authenticator, PublicKey};
 use crate::util::{parse, Decode, Encode, StringBytes};
@@ -74,7 +74,7 @@ impl PacketBody for SessionBodyBytes {
     type Head = SessionHeader;
 
     fn decode_body(_head: &Self::Head, b: &mut Bytes) -> Result<Self, PacketDecodeError> {
-        Ok(Self(b.clone()))
+        Ok(Self(b.copy_to_bytes(b.remaining())))
     }
 }
 
@@ -417,7 +417,7 @@ impl Decode for MsgBody {
         let seq = Sequence(parse::be_u16(b)?);
         let ack = Sequence(parse::be_u16(b)?);
         let mut msg = Self::new(seq, ack);
-        msg.set_data(b.clone());
+        msg.set_data(b.copy_to_bytes(b.remaining()));
         Ok(msg)
     }
 }
@@ -564,8 +564,8 @@ impl Decode for EncBody {
 
     fn decode(b: &mut Bytes) -> Result<Self, Self::Error> {
         let enc_kind = parse::be_u16(b)?;
-        let enc_kind = EncBodyKind::from_u16(enc_kind)
-            .ok_or_else(|| PacketDecodeError::UnknownEncKind(enc_kind))?;
+        let enc_kind =
+            EncBodyKind::from_u16(enc_kind).ok_or(PacketDecodeError::UnknownEncKind(enc_kind))?;
         let cryp_flags = parse::be_u16(b)?;
         let body = EncBodyVariant::decode_kind(enc_kind, b)?;
         Ok(Self::new(cryp_flags, body))

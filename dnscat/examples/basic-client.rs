@@ -30,12 +30,12 @@ async fn main() {
 
     debug!("connected: {:#?}", conn);
 
-    let mut rng = thread_rng();
+    let rng = &mut thread_rng();
 
     loop {
         // Generate some data
-        let write_data_len = rng.gen_range(0, 50);
-        let write_data: String = rng
+        let write_data_len = rng.gen_range(0..50);
+        let write_data: Vec<u8> = rng
             .sample_iter(&Alphanumeric)
             .take(write_data_len)
             .collect();
